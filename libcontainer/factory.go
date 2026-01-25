@@ -25,6 +25,7 @@ type LinuxFactory struct {
 type CreateOption func(*LinuxFactory) error
 
 func New(root string, options ...CreateOption) (Factory, error) {
+	// Should this be defined globally and never be an empty string?
 	if root == "" {
 		root = "/run/hackontainer"
 	}
