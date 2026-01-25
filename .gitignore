@@ -1,0 +1,77 @@
+# Cloned repositories
+runc/
+runtime-tools/
+
+# Build artifacts
+*.exe
+/hackontainer
+runc/runc
+runtime-tools/oci-runtime-tool
+
+# Test results
+results/
+*.txt
+*.log
+
+# Go build cache
+vendor/# Compiled binaries
+oci-runtime
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build artifacts
+*.test
+*.out
+go.work
+go.work.sum
+
+# Nested git repositories (should be submodules or removed)
+**/.git
+runtime-tools/.git
+runc/.git
+
+# Vendor directories (if using Go modules)
+**/vendor/
+runtime-tools/vendor/
+runc/vendor/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs and temporary files
+*.log
+*.tmp
+*.pid
+*.seed
+*.pid.lock
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Coverage reports
+coverage.out
+coverage.html
+
+# Large dependency directories (if not intended as submodules)
+runc
+runtime-tools
