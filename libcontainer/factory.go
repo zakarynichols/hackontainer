@@ -65,6 +65,10 @@ func (l *LinuxFactory) Create(id, bundle string, options ...CreateOption) (Conta
 		return nil, err
 	}
 
+	if err := config.NormalizeRoot(); err != nil {
+		return nil, err
+	}
+
 	if err := validateID(id); err != nil {
 		return nil, err
 	}

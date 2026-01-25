@@ -32,6 +32,24 @@ func Load(path string) (*Config, error) {
 	}, nil
 }
 
+/*
+On POSIX platforms, path is either an absolute path or a relative
+path to the bundle. For example, with a bundle at /to/bundle and a
+root filesystem at /to/bundle/rootfs, the path value can be either
+`/to/bundle/rootfs` or `rootfs`. The value SHOULD be the conventional rootfs.
+*/
+func (c *Config) NormalizeRoot() error {
+	if c.Spec.Root == nil {
+		return fmt.Errorf("root specification required")
+	}
+
+	if !filepath.IsAbs(c.Spec.Root.Path) {
+		bundleDir := filepath.Dir(c.Rootfs)
+		c.Spec.Root.Path = filepath.Join(bundleDir, c.Spec.Root.Path)
+	}
+
+	return nil
+}
 func (c *Config) Validate() error {
 	return Validate(c.Spec)
 }
