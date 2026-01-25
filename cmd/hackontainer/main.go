@@ -124,8 +124,12 @@ var createCommand = cli.Command{
 		}
 
 		// Add condition to prevent duplicate container-id.
-		containerID := context.Args()[0]
+		containerID := context.Args()[0] // Should create unique container ids.
 		bundle := context.Args()[1]
+
+		if _, err := os.Stat(context.GlobalString("root") + "/" + containerID); err == nil {
+			return fmt.Errorf("container id '%s' already exists in directory %s/%s", containerID, context.GlobalString("root"), containerID)
+		}
 
 		factory, err := libcontainer.New(context.GlobalString("root"))
 		if err != nil {
