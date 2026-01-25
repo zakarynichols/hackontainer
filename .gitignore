@@ -1,12 +1,10 @@
-# Cloned repositories
-runc/
-runtime-tools/
-
 # Build artifacts
 *.exe
 /hackontainer
-runc/runc
-runtime-tools/oci-runtime-tool
+
+# Cloned repositories
+runc
+runtime-tools
 runtime-spec
 
 # Test results
