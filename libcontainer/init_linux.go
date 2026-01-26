@@ -2,11 +2,12 @@ package libcontainer
 
 import (
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // mount is a wrapper around unix.Mount for better error handling
@@ -125,6 +126,12 @@ func setupRootfs(container *linuxContainer) error {
 		}
 	}
 
+	// Mount /proc inside the container
+	fmt.Fprintf(os.Stderr, "DEBUG: Mounting /proc in container\n")
+	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NOEXEC|unix.MS_NODEV, ""); err != nil {
+		return fmt.Errorf("failed to mount /proc: %w", err)
+	}
+
 	return nil
 }
 
@@ -166,28 +173,47 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 
 		fmt.Fprintf(os.Stderr, "DEBUG: Rootfs setup complete, executing container process: %v\n", processArgs)
 
-		// Now execute the actual container process
-		cmd := &exec.Cmd{
-			Path:   processArgs[0],
-			Args:   processArgs,
-			Stdout: os.Stdout,
-			Stderr: os.Stderr,
-			Stdin:  os.Stdin,
-			Dir:    "/", // We're now in the new root
-			Env:    container.config.Process.Env,
+		// Immediately exec the container process - this replaces the current process
+		fmt.Fprintf(os.Stderr, "DEBUG: About to syscall.Exec: %s with args: %v\n", processArgs[0], processArgs)
+
+		// Check if the executable exists
+		if _, err := os.Stat(processArgs[0]); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "DEBUG: Executable does not exist: %s\n", processArgs[0])
+			return nil, fmt.Errorf("executable %s not found: %w", processArgs[0], err)
 		}
 
-		return &initProcess{
-			cmd:       cmd,
-			container: container,
-		}, nil
+		fmt.Fprintf(os.Stderr, "DEBUG: About to syscall.Exec: %s with args: %v\n", processArgs[0], processArgs)
+		if cwd, err := os.Getwd(); err == nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Current working directory: %s\n", cwd)
+		}
+		fmt.Fprintf(os.Stderr, "DEBUG: Environment: %v\n", container.config.Process.Env)
+
+		// Use syscall.Exec to replace current process
+		err := syscall.Exec(processArgs[0], processArgs, container.config.Process.Env)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: syscall.Exec failed: %v\n", err)
+			if errno, ok := err.(syscall.Errno); ok {
+				fmt.Fprintf(os.Stderr, "DEBUG: Error details: errno=%d\n", errno)
+			}
+			return nil, fmt.Errorf("failed to exec container process %s: %w", processArgs[0], err)
+		}
+
+		// This should never be reached if exec succeeds
+		return nil, fmt.Errorf("exec returned unexpectedly")
 	} else {
 		// Parent process - re-execute hackontainer as init
 		execPath, err := os.Executable()
 		if err != nil {
 			execPath = os.Args[0] // fallback
 		}
-		initArgs := []string{execPath, "init", container.id, container.bundle}
+
+		// Convert bundle path to absolute path to ensure config can be found
+		absBundle, err := filepath.Abs(container.bundle)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get absolute path for bundle: %w", err)
+		}
+
+		initArgs := []string{execPath, "init", container.id, absBundle}
 		cmd := &exec.Cmd{
 			Path:   execPath,
 			Args:   initArgs,
@@ -197,7 +223,7 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			Dir:    container.config.Rootfs,
 			Env:    container.config.Process.Env,
 			SysProcAttr: &syscall.SysProcAttr{
-				Cloneflags: syscall.CLONE_NEWNS, // Mount namespace isolation
+				Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID,
 			},
 		}
 

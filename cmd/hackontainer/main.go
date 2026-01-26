@@ -373,12 +373,18 @@ var initCommand = cli.Command{
 			env = os.Environ()
 		}
 
-		// Set up rootfs and execute the container process
-		if err := container.Start(); err != nil {
-			return fmt.Errorf("failed to start container: %w", err)
+		// In init mode - this is the re-executed process
+		fmt.Fprintf(os.Stderr, "DEBUG: Init command called for container %s\n", containerID)
+		fmt.Fprintf(os.Stderr, "DEBUG: Loading container from factory\n")
+
+		// Call the container's init process method (this will exec the container process)
+		fmt.Fprintf(os.Stderr, "DEBUG: About to call container.InitProcess()\n")
+		if err := container.InitProcess(); err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: container.InitProcess() failed: %v\n", err)
+			return fmt.Errorf("failed to start init process: %w", err)
 		}
 
-		// This should never be reached as container.Start will exec
+		// This should never be reached as the init process will exec
 		return nil
 	},
 }
