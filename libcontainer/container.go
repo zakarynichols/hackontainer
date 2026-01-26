@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/zakarynichols/hackontainer/config"
 )
 
@@ -19,8 +18,6 @@ type Container interface {
 	Start() error
 	Run() error
 	Delete() error
-	RefreshState() error
-	Inspect() (*ContainerInfo, error)
 }
 
 type Status string
@@ -32,17 +29,13 @@ const (
 )
 
 type State struct {
-	ID                   string            `json:"id"`
-	InitProcessPid       int               `json:"init_process_pid"`
-	InitProcessStartTime uint64            `json:"init_process_start_time"`
-	Created              time.Time         `json:"created"`
-	Started              time.Time         `json:"started,omitempty"`
-	Finished             time.Time         `json:"finished,omitempty"`
-	ExitStatus           int               `json:"exit_status,omitempty"`
-	OOMKilled            bool              `json:"oom_killed,omitempty"`
-	Error                string            `json:"error,omitempty"`
-	Bundle               string            `json:"bundle"`
-	Annotations          map[string]string `json:"annotations,omitempty"`
+	ID          string            `json:"id"`
+	Pid         int               `json:"pid"`
+	Bundle      string            `json:"bundle"`
+	Status      Status            `json:"status"`
+	Created     time.Time         `json:"created"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+	OCIVersion  string            `json:"ociVersion"`
 }
 
 type linuxContainer struct {
@@ -50,19 +43,6 @@ type linuxContainer struct {
 	root   string
 	config *config.Config
 	bundle string
-	state  *State
-}
-
-type ContainerInfo struct {
-	ID          string            `json:"id"`
-	Pid         int               `json:"pid"`
-	Status      string            `json:"status"`
-	Bundle      string            `json:"bundle"`
-	Rootfs      string            `json:"rootfs"`
-	Created     time.Time         `json:"created"`
-	Annotations map[string]string `json:"annotations"`
-	Process     *specs.Process    `json:"process,omitempty"`
-	OCIVersion  string            `json:"ociVersion"`
 }
 
 func (c *linuxContainer) ID() string {
@@ -75,21 +55,10 @@ func (c *linuxContainer) Status() (Status, error) {
 		return "", err
 	}
 
-	if state.Finished.IsZero() {
-		if !state.Started.IsZero() {
-			return Running, nil
-		}
-		return Created, nil
-	}
-
-	return Stopped, nil
+	return state.Status, nil
 }
 
 func (c *linuxContainer) State() (*State, error) {
-	if c.state != nil {
-		return c.state, nil
-	}
-
 	return c.loadState()
 }
 
@@ -99,7 +68,7 @@ func (c *linuxContainer) Start() error {
 		return err
 	}
 
-	if !state.Started.IsZero() {
+	if state.Status == Running {
 		return fmt.Errorf("container already started")
 	}
 
@@ -112,7 +81,9 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("failed to start init process: %w", err)
 	}
 
-	return nil
+	state.Status = Running
+	state.Pid = process.pid()
+	return c.saveState(state)
 }
 
 func (c *linuxContainer) Run() error {
@@ -134,7 +105,7 @@ func (c *linuxContainer) Run() error {
 	if err != nil {
 		return err
 	}
-	state.Finished = time.Now()
+	state.Status = Stopped
 	return c.saveState(state)
 }
 
@@ -147,48 +118,21 @@ func (c *linuxContainer) Delete() error {
 	return os.RemoveAll(c.root)
 }
 
-func (c *linuxContainer) RefreshState() error {
-	_, err := c.loadState()
-	return err
-}
-
-func (c *linuxContainer) Inspect() (*ContainerInfo, error) {
-	state, err := c.State()
-	if err != nil {
-		return nil, err
-	}
-
-	status, err := c.Status()
-	if err != nil {
-		return nil, err
-	}
-
-	return &ContainerInfo{
-		ID:          state.ID,
-		Pid:         state.InitProcessPid,
-		Status:      string(status),
-		Bundle:      state.Bundle,
-		Rootfs:      c.config.Rootfs,
-		Created:     state.Created,
-		Annotations: state.Annotations,
-		Process:     c.config.Process,
-		OCIVersion:  specs.Version,
-	}, nil
-}
-
 func (c *linuxContainer) createState() error {
 	state := &State{
 		ID:          c.id,
-		Created:     time.Now(),
+		Pid:         0,
 		Bundle:      c.bundle,
+		Status:      Created,
+		Created:     time.Now(),
 		Annotations: make(map[string]string),
+		OCIVersion:  "1.3.0",
 	}
 
 	if c.config.Spec != nil && c.config.Spec.Annotations != nil {
 		state.Annotations = c.config.Spec.Annotations
 	}
 
-	c.state = state
 	return c.saveState(state)
 }
 
@@ -199,7 +143,7 @@ func (c *linuxContainer) saveState(state *State) error {
 		return err
 	}
 
-	return ioutil.WriteFile(statePath, data, 0644)
+	return os.WriteFile(statePath, data, 0644)
 }
 
 func (c *linuxContainer) loadState() (*State, error) {
@@ -214,15 +158,5 @@ func (c *linuxContainer) loadState() (*State, error) {
 		return nil, err
 	}
 
-	c.state = &state
 	return &state, nil
-}
-
-func (c *linuxContainer) refreshState() error {
-	state, err := c.loadState()
-	if err != nil {
-		return err
-	}
-	c.state = state
-	return nil
 }

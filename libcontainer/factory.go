@@ -9,7 +9,8 @@ import (
 )
 
 const (
-	stateFilename = "state.json"
+	stateFilename  = "state.json"
+	configFilename = "config.json"
 )
 
 type Factory interface {
@@ -103,7 +104,7 @@ func (l *LinuxFactory) Load(id string) (Container, error) {
 		root: containerRoot,
 	}
 
-	if err := container.refreshState(); err != nil {
+	if _, err := container.State(); err != nil {
 		return nil, err
 	}
 
@@ -127,6 +128,6 @@ func validateID(id string) error {
 }
 
 func loadContainerConfig(bundle string) (*config.Config, error) {
-	configPath := filepath.Join(bundle, "config.json")
+	configPath := filepath.Join(bundle, configFilename)
 	return config.Load(configPath)
 }

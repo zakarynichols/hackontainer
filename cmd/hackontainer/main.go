@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/urfave/cli"
 	"github.com/zakarynichols/hackontainer/libcontainer"
@@ -141,17 +140,7 @@ var createCommand = cli.Command{
 			return fmt.Errorf("failed to create container: %w", err)
 		}
 
-		if pidFile := context.String("pid-file"); pidFile != "" {
-			state, err := container.State()
-			if err != nil {
-				return fmt.Errorf("failed to get container state: %w", err)
-			}
-			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.InitProcessPid)), 0644); err != nil {
-				return fmt.Errorf("failed to write PID file: %w", err)
-			}
-		}
-
-		utils.Infof("Container %s created successfully", containerID)
+		utils.Infof("Container %s created successfully", container.ID())
 		return nil
 	},
 }
@@ -230,7 +219,7 @@ var runCommand = cli.Command{
 			if err != nil {
 				return fmt.Errorf("failed to get container state: %w", err)
 			}
-			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.InitProcessPid)), 0644); err != nil {
+			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.Pid)), 0644); err != nil {
 				return fmt.Errorf("failed to write PID file: %w", err)
 			}
 		}
@@ -270,29 +259,9 @@ var stateCommand = cli.Command{
 			return fmt.Errorf("failed to get container status: %w", err)
 		}
 
-		output := map[string]interface{}{
-			"ociVersion":  "1.3.0",
-			"id":          state.ID,
-			"pid":         state.InitProcessPid,
-			"status":      string(status),
-			"bundle":      state.Bundle,
-			"created":     state.Created.Format(time.RFC3339Nano),
-			"annotations": state.Annotations,
-		}
+		state.Status = libcontainer.Status(status)
 
-		if !state.Started.IsZero() {
-			output["started"] = state.Started.Format(time.RFC3339Nano)
-		}
-
-		if !state.Finished.IsZero() {
-			output["finished"] = state.Finished.Format(time.RFC3339Nano)
-		}
-
-		if state.ExitStatus != 0 {
-			output["exitStatus"] = state.ExitStatus
-		}
-
-		json.NewEncoder(os.Stdout).Encode(output)
+		json.NewEncoder(os.Stdout).Encode(state)
 		return nil
 	},
 }
