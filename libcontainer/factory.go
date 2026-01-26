@@ -104,9 +104,20 @@ func (l *LinuxFactory) Load(id string) (Container, error) {
 		root: containerRoot,
 	}
 
-	if _, err := container.State(); err != nil {
+	// Load state first to get bundle path
+	state, err := container.State()
+	if err != nil {
 		return nil, err
 	}
+
+	// Load configuration from bundle
+	config, err := loadContainerConfig(state.Bundle)
+	if err != nil {
+		return nil, err
+	}
+
+	container.config = config
+	container.bundle = state.Bundle
 
 	return container, nil
 }

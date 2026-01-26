@@ -68,8 +68,21 @@ func (c *linuxContainer) Start() error {
 		return err
 	}
 
-	if state.Status == Running {
-		return fmt.Errorf("container already started")
+	// OCI spec: start operation MUST only work on containers in 'created' state
+	if state.Status != Created {
+		switch state.Status {
+		case Running:
+			return fmt.Errorf("cannot start an already running container")
+		case Stopped:
+			return fmt.Errorf("cannot start a container that has stopped")
+		default:
+			return fmt.Errorf("cannot start a container in the %s state", state.Status)
+		}
+	}
+
+	// Ensure process configuration is available (OCI spec requirement)
+	if c.config.Process == nil || len(c.config.Process.Args) == 0 {
+		return fmt.Errorf("container process not configured")
 	}
 
 	process, err := newInitProcess(c)
@@ -81,9 +94,16 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("failed to start init process: %w", err)
 	}
 
+	// Update state atomically after successful process start
 	state.Status = Running
 	state.Pid = process.pid()
-	return c.saveState(state)
+	if err := c.saveState(state); err != nil {
+		// If state save fails, try to terminate the process
+		_ = process.terminate()
+		return fmt.Errorf("failed to save container state after start: %w", err)
+	}
+
+	return nil
 }
 
 func (c *linuxContainer) Run() error {

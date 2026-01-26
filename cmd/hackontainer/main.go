@@ -52,6 +52,7 @@ func main() {
 		createCommand,
 		deleteCommand,
 		runCommand,
+		startCommand,
 		stateCommand,
 	}
 
@@ -263,5 +264,60 @@ var stateCommand = cli.Command{
 
 		json.NewEncoder(os.Stdout).Encode(state)
 		return nil
+	},
+}
+
+/*
+Start
+
+start <container-id>
+
+This operation MUST generate an error if it is not provided the container ID.
+Attempting to start a container that is not created MUST have no effect on the container
+and MUST generate an error. This operation MUST run the user-specified program as
+specified by process. This operation MUST generate an error if process was not set.
+*/
+var startCommand = cli.Command{
+	Name:        "start",
+	Usage:       "executes the user defined process in a created container",
+	ArgsUsage:   "start container",
+	Description: `The start command executes the user defined process in a created container.`,
+	Action: func(context *cli.Context) error {
+		if err := checkArgs(context, 1, true); err != nil {
+			return err
+		}
+
+		containerID := context.Args().First()
+
+		factory, err := libcontainer.New(context.GlobalString("root"))
+		if err != nil {
+			return fmt.Errorf("failed to create factory: %w", err)
+		}
+
+		container, err := factory.Load(containerID)
+		if err != nil {
+			return fmt.Errorf("failed to load container: %w", err)
+		}
+
+		status, err := container.Status()
+		if err != nil {
+			return fmt.Errorf("failed to get container status: %w", err)
+		}
+
+		// OCI spec: start must only work on containers in 'created' state
+		switch status {
+		case libcontainer.Created:
+			if err := container.Start(); err != nil {
+				return fmt.Errorf("failed to start container: %w", err)
+			}
+			utils.Infof("Container %s started successfully", containerID)
+			return nil
+		case libcontainer.Stopped:
+			return fmt.Errorf("cannot start a container that has stopped")
+		case libcontainer.Running:
+			return fmt.Errorf("cannot start an already running container")
+		default:
+			return fmt.Errorf("cannot start a container in the %s state", status)
+		}
 	},
 }
