@@ -19,12 +19,18 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 	// Find the executable in PATH or use absolute path
 	execPath := processArgs[0]
 	if !filepath.IsAbs(execPath) {
-		// Look for executable in PATH
-		path, err := exec.LookPath(execPath)
-		if err != nil {
-			return nil, fmt.Errorf("executable %q not found: %w", execPath, err)
+		// Look in container rootfs first
+		containerExecPath := filepath.Join(container.config.Rootfs, execPath)
+		if _, err := os.Stat(containerExecPath); err == nil {
+			execPath = containerExecPath
+		} else {
+			// Look for executable in PATH
+			path, err := exec.LookPath(execPath)
+			if err != nil {
+				return nil, fmt.Errorf("executable %q not found in container rootfs or PATH: %w", execPath, err)
+			}
+			execPath = path
 		}
-		execPath = path
 	}
 
 	cmd := &exec.Cmd{
@@ -33,7 +39,7 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
 		Stdin:  os.Stdin,
-		Dir:    container.config.Root.Path,
+		Dir:    container.config.Rootfs,
 		Env:    container.config.Process.Env,
 	}
 
