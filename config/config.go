@@ -12,7 +12,9 @@ import (
 type Config struct {
 	*specs.Spec
 
-	Rootfs string
+	Rootfs          string
+	NoPivotRoot     bool    // For compatibility - use MS_MOVE + chroot instead of pivot_root
+	RootPropagation uintptr // Mount propagation flags for root
 }
 
 func Load(path string) (*Config, error) {
