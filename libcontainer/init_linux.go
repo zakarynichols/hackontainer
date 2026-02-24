@@ -171,6 +171,14 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			return nil, fmt.Errorf("failed to setup rootfs: %w", err)
 		}
 
+		// Set hostname if specified in config
+		if container.config.Hostname != "" {
+			fmt.Fprintf(os.Stderr, "DEBUG: Setting hostname to: %s\n", container.config.Hostname)
+			if err := unix.Sethostname([]byte(container.config.Hostname)); err != nil {
+				return nil, fmt.Errorf("failed to set hostname: %w", err)
+			}
+		}
+
 		fmt.Fprintf(os.Stderr, "DEBUG: Rootfs setup complete, executing container process: %v\n", processArgs)
 
 		// Immediately exec the container process - this replaces the current process
@@ -223,7 +231,7 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			Dir:    container.config.Rootfs,
 			Env:    container.config.Process.Env,
 			SysProcAttr: &syscall.SysProcAttr{
-				Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID,
+				Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWUTS,
 			},
 		}
 
