@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -29,13 +30,15 @@ func unmount(target string, flags int) error {
 // prepareRoot sets up the root filesystem for container
 // Following runc's prepareRoot implementation
 func prepareRoot(rootfs string) error {
-	// Default to slave mount, but respect config if set
-	flag := unix.MS_SLAVE | unix.MS_REC
+	// First make the root mount private (REQUIRED for pivot_root to work)
+	if err := mount("", "/", "", unix.MS_PRIVATE|unix.MS_REC, ""); err != nil {
+		return fmt.Errorf("failed to make root mount private: %w", err)
+	}
 
-	// Apply root propagation flags if configured (skip MS_PRIVATE which is set in default)
-	// This will be extended in future to use container config
+	// Then change to slave to prevent mount propagation to host
+	flag := unix.MS_SLAVE | unix.MS_REC
 	if err := mount("", "/", "", uintptr(flag), ""); err != nil {
-		return fmt.Errorf("failed to make parent mount private: %w", err)
+		return fmt.Errorf("failed to make root mount slave: %w", err)
 	}
 
 	// Ensure rootfs is a mount point by bind mounting it to itself
@@ -87,6 +90,7 @@ func pivotRoot(rootfs string) error {
 	if err := unmount(".", unix.MNT_DETACH); err != nil {
 		return fmt.Errorf("failed to unmount old root: %w", err)
 	}
+	fmt.Fprintf(os.Stderr, "DEBUG: Old root unmounted successfully\n")
 
 	// Switch back to our shiny new root
 	if err := unix.Chdir("/"); err != nil {
@@ -116,6 +120,7 @@ func setupRootfs(container *linuxContainer) error {
 		if err := pivotRoot(container.config.Rootfs); err != nil {
 			return fmt.Errorf("failed to pivot_root: %w", err)
 		}
+		fmt.Fprintf(os.Stderr, "DEBUG: pivot_root completed successfully\n")
 	} else {
 		// Fallback to chroot (simpler but less secure)
 		if err := unix.Chroot("."); err != nil {
@@ -127,6 +132,11 @@ func setupRootfs(container *linuxContainer) error {
 	}
 
 	// Mount /proc inside the container
+	// First ensure /proc directory exists
+	if err := os.MkdirAll("/proc", 0755); err != nil {
+		return fmt.Errorf("failed to create /proc directory: %w", err)
+	}
+
 	fmt.Fprintf(os.Stderr, "DEBUG: Mounting /proc in container\n")
 	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NOEXEC|unix.MS_NODEV, ""); err != nil {
 		return fmt.Errorf("failed to mount /proc: %w", err)
@@ -143,23 +153,6 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 
 	processArgs := make([]string, len(args))
 	copy(processArgs, args)
-
-	// Find executable in PATH or use absolute path
-	execPath := processArgs[0]
-	if !filepath.IsAbs(execPath) {
-		// Look in container rootfs first
-		containerExecPath := filepath.Join(container.config.Rootfs, execPath)
-		if _, err := os.Stat(containerExecPath); err == nil {
-			execPath = containerExecPath
-		} else {
-			// Look for executable in PATH
-			path, err := exec.LookPath(execPath)
-			if err != nil {
-				return nil, fmt.Errorf("executable %q not found in container rootfs or PATH: %w", execPath, err)
-			}
-			execPath = path
-		}
-	}
 
 	// Self-execution pattern like runc
 	if len(os.Args) > 1 && os.Args[1] == "init" {
@@ -179,31 +172,58 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			}
 		}
 
+		// Resolve executable path AFTER pivot_root, using container's environment
+		// This is how runc does it - look up after rootfs is set up
+		execPath := processArgs[0]
+		if !filepath.IsAbs(execPath) {
+			// First check if it's directly in rootfs (e.g., /bin/sh)
+			containerExecPath := filepath.Join(container.config.Rootfs, execPath)
+			if _, err := os.Stat(containerExecPath); err == nil {
+				execPath = containerExecPath
+			} else {
+				// Use container's PATH from process.Env to find the executable
+				containerEnv := container.config.Process.Env
+				pathValue := ""
+				for _, env := range containerEnv {
+					if strings.HasPrefix(env, "PATH=") {
+						pathValue = strings.TrimPrefix(env, "PATH=")
+						break
+					}
+				}
+				if pathValue != "" {
+					// Set PATH temporarily for LookPath
+					oldPath := os.Getenv("PATH")
+					os.Setenv("PATH", pathValue)
+					path, err := exec.LookPath(execPath)
+					os.Setenv("PATH", oldPath)
+					if err != nil {
+						return nil, fmt.Errorf("executable %q not found in container PATH: %w", execPath, err)
+					}
+					execPath = path
+				} else {
+					return nil, fmt.Errorf("no PATH set in container environment")
+				}
+			}
+		}
+
+		fmt.Fprintf(os.Stderr, "DEBUG: Resolved executable path: %s\n", execPath)
 		fmt.Fprintf(os.Stderr, "DEBUG: Rootfs setup complete, executing container process: %v\n", processArgs)
 
-		// Immediately exec the container process - this replaces the current process
-		fmt.Fprintf(os.Stderr, "DEBUG: About to syscall.Exec: %s with args: %v\n", processArgs[0], processArgs)
+		// Replace the first arg with the resolved path
+		processArgs[0] = execPath
 
-		// Check if the executable exists
-		if _, err := os.Stat(processArgs[0]); os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "DEBUG: Executable does not exist: %s\n", processArgs[0])
-			return nil, fmt.Errorf("executable %s not found: %w", processArgs[0], err)
-		}
+		fmt.Fprintf(os.Stderr, "DEBUG: About to syscall.Exec: %s with args: %v\n", execPath, processArgs)
 
-		fmt.Fprintf(os.Stderr, "DEBUG: About to syscall.Exec: %s with args: %v\n", processArgs[0], processArgs)
-		if cwd, err := os.Getwd(); err == nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: Current working directory: %s\n", cwd)
-		}
 		fmt.Fprintf(os.Stderr, "DEBUG: Environment: %v\n", container.config.Process.Env)
 
 		// Use syscall.Exec to replace current process
-		err := syscall.Exec(processArgs[0], processArgs, container.config.Process.Env)
+		err := syscall.Exec(execPath, processArgs, container.config.Process.Env)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "DEBUG: syscall.Exec failed: %v\n", err)
 			if errno, ok := err.(syscall.Errno); ok {
 				fmt.Fprintf(os.Stderr, "DEBUG: Error details: errno=%d\n", errno)
 			}
-			return nil, fmt.Errorf("failed to exec container process %s: %w", processArgs[0], err)
+			return nil, fmt.Errorf("failed to exec container process %s: %w", execPath, err)
 		}
 
 		// This should never be reached if exec succeeds
