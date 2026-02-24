@@ -17,6 +17,7 @@ type Container interface {
 	State() (*State, error)
 	Start() error
 	Run() error
+	InitProcess() error
 	Delete() error
 }
 
@@ -63,10 +64,14 @@ func (c *linuxContainer) State() (*State, error) {
 }
 
 func (c *linuxContainer) Start() error {
+	fmt.Fprintf(os.Stderr, "DEBUG: Container.Start() called for container %s\n", c.id)
+
 	state, err := c.State()
 	if err != nil {
 		return err
 	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: Container %s current status: %s\n", c.id, state.Status)
 
 	// OCI spec: start operation MUST only work on containers in 'created' state
 	if state.Status != Created {
@@ -85,11 +90,14 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("container process not configured")
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: Creating init process for container %s with args: %v\n", c.id, c.config.Process.Args)
+
 	process, err := newInitProcess(c)
 	if err != nil {
 		return fmt.Errorf("failed to create init process: %w", err)
 	}
 
+	fmt.Fprintf(os.Stderr, "DEBUG: Starting init process for container %s\n", c.id)
 	if err := process.start(); err != nil {
 		return fmt.Errorf("failed to start init process: %w", err)
 	}
@@ -103,6 +111,28 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("failed to save container state after start: %w", err)
 	}
 
+	return nil
+}
+
+// InitProcess creates and starts the init process for container initialization
+func (c *linuxContainer) InitProcess() error {
+	fmt.Fprintf(os.Stderr, "DEBUG: Container.InitProcess() called for container %s\n", c.id)
+
+	fmt.Fprintf(os.Stderr, "DEBUG: About to call newInitProcess()\n")
+	process, err := newInitProcess(c)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "DEBUG: newInitProcess() failed: %v\n", err)
+		return fmt.Errorf("failed to create init process: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG: About to call process.start()\n")
+	if err := process.start(); err != nil {
+		fmt.Fprintf(os.Stderr, "DEBUG: process.start() failed: %v\n", err)
+		return fmt.Errorf("failed to start init process: %w", err)
+	}
+
+	// This should not be reached in normal operation as the init process will exec
+	fmt.Fprintf(os.Stderr, "DEBUG: process.start() returned unexpectedly - exec should have happened\n")
 	return nil
 }
 

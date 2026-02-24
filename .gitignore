@@ -1,7 +1,7 @@
 # Build artifacts
 *.exe
 /hackontainer
-test-bundle
+test-bundles
 
 # Cloned repositories
 runc

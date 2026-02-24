@@ -53,6 +53,12 @@ func (l *LinuxFactory) Create(id, bundle string, options ...CreateOption) (Conta
 		bundle = "."
 	}
 
+	// Convert bundle to absolute path to ensure consistency
+	absBundle, err := filepath.Abs(bundle)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get absolute path for bundle: %w", err)
+	}
+
 	if id == "" {
 		return nil, fmt.Errorf("container ID cannot be empty")
 	}
@@ -62,7 +68,7 @@ func (l *LinuxFactory) Create(id, bundle string, options ...CreateOption) (Conta
 		return nil, err
 	}
 
-	config, err := loadContainerConfig(bundle)
+	config, err := loadContainerConfig(absBundle)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +89,7 @@ func (l *LinuxFactory) Create(id, bundle string, options ...CreateOption) (Conta
 		id:     id,
 		root:   containerRoot,
 		config: config,
-		bundle: bundle,
+		bundle: absBundle,
 	}
 
 	if err := container.createState(); err != nil {

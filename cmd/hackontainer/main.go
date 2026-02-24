@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/urfave/cli"
+	"github.com/zakarynichols/hackontainer/config"
 	"github.com/zakarynichols/hackontainer/libcontainer"
 	"github.com/zakarynichols/hackontainer/libcontainer/utils"
 )
@@ -54,6 +56,7 @@ func main() {
 		runCommand,
 		startCommand,
 		stateCommand,
+		initCommand,
 	}
 
 	app.Before = func(context *cli.Context) error {
@@ -319,5 +322,69 @@ var startCommand = cli.Command{
 		default:
 			return fmt.Errorf("cannot start a container in the %s state", status)
 		}
+	},
+}
+
+/*
+Init
+
+init <container-id> <path-to-bundle>
+
+This is a special command that is used internally by the runtime.
+It sets up the container environment including namespaces, mounts, and then
+executes the container process. This command is not meant to be called directly
+by users.
+*/
+var initCommand = cli.Command{
+	Name:  "init",
+	Usage: "initialize the container process",
+	Action: func(context *cli.Context) error {
+		if err := checkArgs(context, 2, true); err != nil {
+			return err
+		}
+
+		containerID := context.Args()[0]
+		bundle := context.Args()[1]
+
+		factory, err := libcontainer.New(context.GlobalString("root"))
+		if err != nil {
+			return fmt.Errorf("failed to create factory: %w", err)
+		}
+
+		container, err := factory.Load(containerID)
+		if err != nil {
+			return fmt.Errorf("failed to load container: %w", err)
+		}
+
+		// Load config to get process args
+		configPath := filepath.Join(bundle, "config.json")
+		config, err := config.Load(configPath)
+		if err != nil {
+			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		if config.Process == nil || len(config.Process.Args) == 0 {
+			return fmt.Errorf("no process specified in config")
+		}
+
+		// Set up environment variables
+		env := config.Process.Env
+		if env == nil {
+			env = os.Environ()
+		}
+
+		// In init mode - this is the re-executed process
+		fmt.Fprintf(os.Stderr, "DEBUG: Init command called for container %s\n", containerID)
+		fmt.Fprintf(os.Stderr, "DEBUG: Loading container from factory\n")
+
+		// Call the container's init process method (this will exec the container process)
+		fmt.Fprintf(os.Stderr, "DEBUG: About to call container.InitProcess()\n")
+		if err := container.InitProcess(); err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: container.InitProcess() failed: %v\n", err)
+			return fmt.Errorf("failed to start init process: %w", err)
+		}
+
+		// This should never be reached as the init process will exec
+		return nil
 	},
 }
