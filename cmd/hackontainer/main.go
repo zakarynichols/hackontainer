@@ -120,15 +120,24 @@ an effect on the container.
 var createCommand = cli.Command{
 	Name:  "create",
 	Usage: "create a container",
-	Flags: []cli.Flag{},
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name:  "bundle, b",
+			Value: ".",
+			Usage: "path to the container's bundle directory",
+		},
+		cli.StringFlag{
+			Name:  "pid-file",
+			Usage: "path to a file to write the container's PID",
+		},
+	},
 	Action: func(context *cli.Context) error {
-		if err := checkArgs(context, 2, true); err != nil {
+		if err := checkArgs(context, 1, true); err != nil {
 			return err
 		}
 
-		// Add condition to prevent duplicate container-id.
-		containerID := context.Args()[0] // Should create unique container ids.
-		bundle := context.Args()[1]
+		containerID := context.Args()[0]
+		bundle := context.String("bundle")
 
 		if _, err := os.Stat(context.GlobalString("root") + "/" + containerID); err == nil {
 			return fmt.Errorf("container id '%s' already exists in directory %s/%s", containerID, context.GlobalString("root"), containerID)
@@ -142,6 +151,17 @@ var createCommand = cli.Command{
 		container, err := factory.Create(containerID, bundle)
 		if err != nil {
 			return fmt.Errorf("failed to create container: %w", err)
+		}
+
+		// Write pid-file if specified
+		if pidFile := context.String("pid-file"); pidFile != "" {
+			state, err := container.State()
+			if err != nil {
+				return fmt.Errorf("failed to get container state: %w", err)
+			}
+			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.Pid)), 0644); err != nil {
+				return fmt.Errorf("failed to write PID file: %w", err)
+			}
 		}
 
 		utils.Infof("Container %s created successfully", container.ID())
@@ -339,12 +359,16 @@ var initCommand = cli.Command{
 	Name:  "init",
 	Usage: "initialize the container process",
 	Action: func(context *cli.Context) error {
+		fmt.Println("DEBUG: init command action started, args:", os.Args)
+
 		if err := checkArgs(context, 2, true); err != nil {
 			return err
 		}
 
 		containerID := context.Args()[0]
 		bundle := context.Args()[1]
+
+		fmt.Println("DEBUG: init - containerID=" + containerID + ", bundle=" + bundle)
 
 		factory, err := libcontainer.New(context.GlobalString("root"))
 		if err != nil {
