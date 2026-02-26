@@ -34,16 +34,8 @@ func (p *initProcess) start() error {
 	}
 
 	fmt.Fprintf(os.Stderr, "DEBUG: process started successfully with PID: %d\n", p.cmd.Process.Pid)
+	fmt.Fprintf(os.Stderr, "DEBUG: process.start() returning immediately (container running in background)\n")
 
-	// Wait for the child process to complete or fail
-	fmt.Fprintf(os.Stderr, "DEBUG: waiting for child process to complete\n")
-	err = p.cmd.Wait()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "DEBUG: child process failed: %v\n", err)
-		return fmt.Errorf("child process failed: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: child process completed successfully\n")
 	return nil
 }
 

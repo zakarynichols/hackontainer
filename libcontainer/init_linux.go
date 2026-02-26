@@ -241,6 +241,23 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			return nil, fmt.Errorf("failed to get absolute path for bundle: %w", err)
 		}
 
+		// Debug: Check rootfs accessibility
+		fmt.Fprintf(os.Stderr, "DEBUG: Rootfs path: %s\n", container.config.Rootfs)
+		rootfsInfo, err := os.Stat(container.config.Rootfs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Rootfs stat error: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "DEBUG: Rootfs is dir: %v, mode: %v\n", rootfsInfo.IsDir(), rootfsInfo.Mode())
+		}
+
+		// Debug: Check if execPath exists
+		execInfo, err := os.Stat(execPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: ExecPath stat error: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "DEBUG: ExecPath exists: %s, mode: %v\n", execPath, execInfo.Mode())
+		}
+
 		initArgs := []string{execPath, "init", container.id, absBundle}
 		cmd := &exec.Cmd{
 			Path:   execPath,
