@@ -28,9 +28,18 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	bundleDir := filepath.Dir(path)
+	rootPath := "."
+	if spec.Root != nil {
+		rootPath = spec.Root.Path
+		if rootPath == "" {
+			rootPath = "."
+		}
+	}
+
 	return &Config{
 		Spec:   &spec,
-		Rootfs: filepath.Join(filepath.Dir(path), "rootfs"),
+		Rootfs: filepath.Join(bundleDir, rootPath),
 	}, nil
 }
 
@@ -49,6 +58,8 @@ func (c *Config) NormalizeRoot() error {
 		bundleDir := filepath.Dir(c.Rootfs)
 		c.Spec.Root.Path = filepath.Join(bundleDir, c.Spec.Root.Path)
 	}
+
+	c.Rootfs = c.Spec.Root.Path
 
 	return nil
 }

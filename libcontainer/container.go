@@ -111,6 +111,32 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("failed to save container state after start: %w", err)
 	}
 
+	// Reaper: wait for the container process to exit and update state to stopped
+	go func() {
+		fmt.Fprintf(os.Stderr, "DEBUG: Reaper: STARTING for container %s\n", c.id)
+		fmt.Fprintf(os.Stderr, "DEBUG: Reaper: process.pid() = %d\n", process.pid())
+
+		ps, err := process.wait()
+		fmt.Fprintf(os.Stderr, "DEBUG: Reaper: process.wait() returned, ps=%v, err=%v\n", ps, err)
+
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Reaper: process.wait() error: %v\n", err)
+		}
+		fmt.Fprintf(os.Stderr, "DEBUG: Reaper: container %s exited, updating state to stopped\n", c.id)
+
+		s, err := c.State()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Reaper: failed to load state: %v\n", err)
+			return
+		}
+		s.Status = Stopped
+		if err := c.saveState(s); err != nil {
+			fmt.Fprintf(os.Stderr, "DEBUG: Reaper: failed to save state: %v\n", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "DEBUG: Reaper: state updated to stopped\n")
+	}()
+
 	return nil
 }
 

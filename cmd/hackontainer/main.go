@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/urfave/cli"
 	"github.com/zakarynichols/hackontainer/config"
@@ -334,6 +335,19 @@ var startCommand = cli.Command{
 				return fmt.Errorf("failed to start container: %w", err)
 			}
 			utils.Infof("Container %s started successfully", containerID)
+
+			// Wait for container to stop
+			for {
+				status, err := container.Status()
+				if err != nil {
+					return fmt.Errorf("failed to get container status: %w", err)
+				}
+				if status == libcontainer.Stopped {
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+
 			return nil
 		case libcontainer.Stopped:
 			return fmt.Errorf("cannot start a container that has stopped")
