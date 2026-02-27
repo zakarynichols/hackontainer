@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
+	"strconv"
+	"strings"
+	"syscall"
 
 	"github.com/urfave/cli"
 	"github.com/zakarynichols/hackontainer/config"
@@ -57,6 +59,7 @@ func main() {
 		runCommand,
 		startCommand,
 		stateCommand,
+		killCommand,
 		initCommand,
 	}
 
@@ -336,18 +339,6 @@ var startCommand = cli.Command{
 			}
 			utils.Infof("Container %s started successfully", containerID)
 
-			// Wait for container to stop
-			for {
-				status, err := container.Status()
-				if err != nil {
-					return fmt.Errorf("failed to get container status: %w", err)
-				}
-				if status == libcontainer.Stopped {
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-
 			return nil
 		case libcontainer.Stopped:
 			return fmt.Errorf("cannot start a container that has stopped")
@@ -425,4 +416,96 @@ var initCommand = cli.Command{
 		// This should never be reached as the init process will exec
 		return nil
 	},
+}
+
+var killCommand = cli.Command{
+	Name:  "kill",
+	Usage: "kill sends the specified signal (default: SIGTERM) to the container's init process",
+	ArgsUsage: `<container-id> [signal]
+
+Where "<container-id>" is the name for the instance of the container and
+"[signal]" is the signal to be sent to the init process.
+
+EXAMPLE:
+For example, if the container id is "ubuntu01" the following will send a "KILL"
+signal to the init process of the "ubuntu01" container:
+
+       # hackontainer kill ubuntu01 KILL`,
+	Action: func(context *cli.Context) error {
+		if context.NArg() < 1 || context.NArg() > 2 {
+			return fmt.Errorf("need 1 or 2 arguments, got %d", context.NArg())
+		}
+
+		containerID := context.Args()[0]
+
+		factory, err := libcontainer.New(context.GlobalString("root"))
+		if err != nil {
+			return fmt.Errorf("failed to create factory: %w", err)
+		}
+
+		container, err := factory.Load(containerID)
+		if err != nil {
+			return fmt.Errorf("failed to load container: %w", err)
+		}
+
+		sigstr := context.Args().Get(1)
+		if sigstr == "" {
+			sigstr = "SIGTERM"
+		}
+
+		sig, err := parseSignal(sigstr)
+		if err != nil {
+			return err
+		}
+
+		err = container.Signal(sig)
+		if err != nil {
+			return fmt.Errorf("failed to send signal: %w", err)
+		}
+
+		utils.Infof("Signal %s sent to container %s", sigstr, containerID)
+		return nil
+	},
+}
+
+func parseSignal(rawSignal string) (syscall.Signal, error) {
+	s, err := strconv.Atoi(rawSignal)
+	if err == nil {
+		return syscall.Signal(s), nil
+	}
+
+	sig := strings.ToUpper(rawSignal)
+	if !strings.HasPrefix(sig, "SIG") {
+		sig = "SIG" + sig
+	}
+
+	signalNum := stringToSignal(sig)
+	if signalNum == 0 {
+		return 0, fmt.Errorf("unknown signal %q", rawSignal)
+	}
+
+	return signalNum, nil
+}
+
+func stringToSignal(sig string) syscall.Signal {
+	switch sig {
+	case "SIGTERM":
+		return syscall.SIGTERM
+	case "SIGKILL":
+		return syscall.SIGKILL
+	case "SIGINT":
+		return syscall.SIGINT
+	case "SIGQUIT":
+		return syscall.SIGQUIT
+	case "SIGHUP":
+		return syscall.SIGHUP
+	case "SIGUSR1":
+		return syscall.SIGUSR1
+	case "SIGUSR2":
+		return syscall.SIGUSR2
+	case "SIGWINCH":
+		return syscall.SIGWINCH
+	default:
+		return 0
+	}
 }
