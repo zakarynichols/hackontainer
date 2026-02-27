@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/zakarynichols/hackontainer/config"
-	"golang.org/x/sys/unix"
 )
 
 type Container interface {
@@ -63,7 +62,21 @@ func (c *linuxContainer) Status() (Status, error) {
 }
 
 func (c *linuxContainer) State() (*State, error) {
-	return c.loadState()
+	state, err := c.loadState()
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if process still exists for Running containers
+	// This is how runc, crun, and youki handle state - check /proc
+	if state.Status == Running && state.Pid > 0 {
+		if err := syscall.Kill(state.Pid, 0); err != nil {
+			// Process doesn't exist or is not accessible
+			state.Status = Stopped
+		}
+	}
+
+	return state, nil
 }
 
 func (c *linuxContainer) Start() error {
@@ -105,6 +118,9 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("failed to start init process: %w", err)
 	}
 
+	// Register container PID with reaper
+	RegisterContainer(process.pid(), c.root)
+
 	// Update state atomically after successful process start
 	state.Status = Running
 	state.Pid = process.pid()
@@ -114,73 +130,7 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("failed to save container state after start: %w", err)
 	}
 
-	// Fork a reaper process that will update state to stopped when container exits
-	// This ensures the reaper outlives the parent process
-	containerPid := state.Pid
-	containerRoot := c.root
-
-	// Fork a child process to act as reaper
-	// Using raw syscall since unix.Fork doesn't exist in golang.org/x/sys/unix
-	pid, _, errSys := unix.Syscall(unix.SYS_FORK, 0, 0, 0)
-	if errSys != 0 {
-		fmt.Fprintf(os.Stderr, "DEBUG: Fork failed for reaper: %v\n", errSys)
-		// Continue anyway - container is running, just won't update state on exit
-		return nil
-	}
-
-	if pid == 0 {
-		// Child process - act as reaper
-		fmt.Fprintf(os.Stderr, "DEBUG REAPER: Started, watching PID: %d, root: %s\n", containerPid, containerRoot)
-
-		// Wait for the container process to exit
-		for iteration := 0; ; iteration++ {
-			// Check if the container process still exists
-			err := syscall.Kill(containerPid, 0)
-			if err != nil {
-				// Process doesn't exist anymore, update state
-				fmt.Fprintf(os.Stderr, "DEBUG REAPER: Iteration %d - Process %d exited (err: %v)\n", iteration, containerPid, err)
-				break
-			}
-			if iteration%10 == 0 {
-				fmt.Fprintf(os.Stderr, "DEBUG REAPER: Iteration %d - Process %d still running\n", iteration, containerPid)
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-
-		// Update state to stopped
-		statePath := filepath.Join(containerRoot, stateFilename)
-		fmt.Fprintf(os.Stderr, "DEBUG REAPER: Reading state from: %s\n", statePath)
-		data, err := ioutil.ReadFile(statePath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG REAPER: Failed to read state: %v\n", err)
-			os.Exit(0)
-		}
-
-		var currentState State
-		if err := json.Unmarshal(data, &currentState); err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG REAPER: Failed to unmarshal state: %v\n", err)
-			os.Exit(0)
-		}
-
-		fmt.Fprintf(os.Stderr, "DEBUG REAPER: Current state: %s, updating to stopped\n", currentState.Status)
-		currentState.Status = Stopped
-		data, err = json.MarshalIndent(currentState, "", "  ")
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG REAPER: Failed to marshal state: %v\n", err)
-			os.Exit(0)
-		}
-
-		if err := ioutil.WriteFile(statePath, data, 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG REAPER: Failed to write state: %v\n", err)
-			os.Exit(0)
-		}
-
-		fmt.Fprintf(os.Stderr, "DEBUG REAPER: State updated to stopped, exiting\n")
-		os.Exit(0)
-	}
-
-	// Parent process - return immediately
-	fmt.Fprintf(os.Stderr, "DEBUG: Reaper forked with PID: %d\n", pid)
+	fmt.Fprintf(os.Stderr, "DEBUG: Container started successfully, reaper runs in init process\n")
 
 	return nil
 }
@@ -245,8 +195,6 @@ func (c *linuxContainer) Signal(sig syscall.Signal) error {
 		return fmt.Errorf("failed to get container state: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG SIGNAL: container status: %s, pid: %d, signal: %v\n", state.Status, state.Pid, sig)
-
 	if state.Status != Running {
 		return fmt.Errorf("cannot signal a container that is not running")
 	}
@@ -256,7 +204,6 @@ func (c *linuxContainer) Signal(sig syscall.Signal) error {
 	}
 
 	err = syscall.Kill(state.Pid, sig)
-	fmt.Fprintf(os.Stderr, "DEBUG SIGNAL: syscall.Kill(%d, %v) result: %v\n", state.Pid, sig, err)
 	if err != nil {
 		return fmt.Errorf("failed to send signal: %w", err)
 	}

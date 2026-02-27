@@ -19,7 +19,6 @@ type parentProcess interface {
 type initProcess struct {
 	cmd       *exec.Cmd
 	container *linuxContainer
-	pipe      *os.File
 }
 
 func (p *initProcess) pid() int {
@@ -27,14 +26,15 @@ func (p *initProcess) pid() int {
 }
 
 func (p *initProcess) start() error {
-	fmt.Fprintf(os.Stderr, "DEBUG: process.start() called, executing: %s\n", p.cmd.Path)
+	fmt.Fprintf(os.Stderr, "DEBUG: process.start() executing: %s\n", p.cmd.Path)
+
 	err := p.cmd.Start()
 	if err != nil {
 		return fmt.Errorf("failed to start init process: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: process started successfully with PID: %d\n", p.cmd.Process.Pid)
-	fmt.Fprintf(os.Stderr, "DEBUG: process.start() returning immediately (container running in background)\n")
+	fmt.Fprintf(os.Stderr, "DEBUG: process started PID=%d\n", p.cmd.Process.Pid)
+	// Note: subreaper will handle reaping, no goroutine needed
 
 	return nil
 }

@@ -154,10 +154,23 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 	processArgs := make([]string, len(args))
 	copy(processArgs, args)
 
-	// Self-execution pattern like runc
-	if len(os.Args) > 1 && os.Args[1] == "init" {
+	// Self-execution pattern like runc - check os.Args for "init" command (accounting for flags before command)
+	// os.Args can be: [hackontainer --root /path init id bundle] or [hackontainer init id bundle]
+	isInit := false
+	for _, arg := range os.Args {
+		if arg == "init" {
+			isInit = true
+			break
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "DEBUG CHILD: os.Args check: len=%d, os.Args=%v, isInit=%v\n", len(os.Args), os.Args, isInit)
+
+	// Self-execution pattern like runc - check os.Args (runtime args after exec), NOT processArgs (container cmd)
+	if isInit {
 		// We're in the init process - set up rootfs and then exec container process
-		fmt.Fprintf(os.Stderr, "DEBUG: Setting up container rootfs: %s\n", container.config.Rootfs)
+		fmt.Fprintf(os.Stderr, "DEBUG CHILD: Entered init branch\n")
+		fmt.Fprintf(os.Stderr, "DEBUG CHILD: Setting up container rootfs: %s\n", container.config.Rootfs)
 
 		// Set up rootfs with pivot_root
 		if err := setupRootfs(container); err != nil {
@@ -212,17 +225,10 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 		// Replace the first arg with the resolved path
 		processArgs[0] = execPath
 
-		fmt.Fprintf(os.Stderr, "DEBUG: About to syscall.Exec: %s with args: %v\n", execPath, processArgs)
-
-		fmt.Fprintf(os.Stderr, "DEBUG: Environment: %v\n", container.config.Process.Env)
-
 		// Use syscall.Exec to replace current process
 		err := syscall.Exec(execPath, processArgs, container.config.Process.Env)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "DEBUG: syscall.Exec failed: %v\n", err)
-			if errno, ok := err.(syscall.Errno); ok {
-				fmt.Fprintf(os.Stderr, "DEBUG: Error details: errno=%d\n", errno)
-			}
 			return nil, fmt.Errorf("failed to exec container process %s: %w", execPath, err)
 		}
 
@@ -241,6 +247,10 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			return nil, fmt.Errorf("failed to get absolute path for bundle: %w", err)
 		}
 
+		// Pass root path through to child process so it can find the container state
+		// container.root is /root/containername, but we need /root for the factory to load container
+		containerRoot := filepath.Dir(container.root)
+
 		// Debug: Check rootfs accessibility
 		fmt.Fprintf(os.Stderr, "DEBUG: Rootfs path: %s\n", container.config.Rootfs)
 		rootfsInfo, err := os.Stat(container.config.Rootfs)
@@ -258,7 +268,7 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			fmt.Fprintf(os.Stderr, "DEBUG: ExecPath exists: %s, mode: %v\n", execPath, execInfo.Mode())
 		}
 
-		initArgs := []string{execPath, "init", container.id, absBundle}
+		initArgs := []string{execPath, "--root", containerRoot, "init", container.id, absBundle}
 		cmd := &exec.Cmd{
 			Path:   execPath,
 			Args:   initArgs,
