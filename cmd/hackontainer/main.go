@@ -21,10 +21,6 @@ const (
 )
 
 func main() {
-	if err := libcontainer.InitReaper(); err != nil {
-		fmt.Fprintf(os.Stderr, "WARNING: failed to init reaper: %v\n", err)
-	}
-
 	app := cli.NewApp()
 	app.Name = "hackontainer"
 	app.Usage = usage

@@ -90,7 +90,6 @@ func pivotRoot(rootfs string) error {
 	if err := unmount(".", unix.MNT_DETACH); err != nil {
 		return fmt.Errorf("failed to unmount old root: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "DEBUG: Old root unmounted successfully\n")
 
 	// Switch back to our shiny new root
 	if err := unix.Chdir("/"); err != nil {
@@ -120,7 +119,6 @@ func setupRootfs(container *linuxContainer) error {
 		if err := pivotRoot(container.config.Rootfs); err != nil {
 			return fmt.Errorf("failed to pivot_root: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "DEBUG: pivot_root completed successfully\n")
 	} else {
 		// Fallback to chroot (simpler but less secure)
 		if err := unix.Chroot("."); err != nil {
@@ -137,7 +135,6 @@ func setupRootfs(container *linuxContainer) error {
 		return fmt.Errorf("failed to create /proc directory: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Mounting /proc in container\n")
 	if err := unix.Mount("proc", "/proc", "proc", unix.MS_NOSUID|unix.MS_NOEXEC|unix.MS_NODEV, ""); err != nil {
 		return fmt.Errorf("failed to mount /proc: %w", err)
 	}
@@ -164,13 +161,9 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG CHILD: os.Args check: len=%d, os.Args=%v, isInit=%v\n", len(os.Args), os.Args, isInit)
-
 	// Self-execution pattern like runc - check os.Args (runtime args after exec), NOT processArgs (container cmd)
 	if isInit {
 		// We're in the init process - set up rootfs and then exec container process
-		fmt.Fprintf(os.Stderr, "DEBUG CHILD: Entered init branch\n")
-		fmt.Fprintf(os.Stderr, "DEBUG CHILD: Setting up container rootfs: %s\n", container.config.Rootfs)
 
 		// Set up rootfs with pivot_root
 		if err := setupRootfs(container); err != nil {
@@ -179,7 +172,6 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 
 		// Set hostname if specified in config
 		if container.config.Hostname != "" {
-			fmt.Fprintf(os.Stderr, "DEBUG: Setting hostname to: %s\n", container.config.Hostname)
 			if err := unix.Sethostname([]byte(container.config.Hostname)); err != nil {
 				return nil, fmt.Errorf("failed to set hostname: %w", err)
 			}
@@ -219,16 +211,12 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			}
 		}
 
-		fmt.Fprintf(os.Stderr, "DEBUG: Resolved executable path: %s\n", execPath)
-		fmt.Fprintf(os.Stderr, "DEBUG: Rootfs setup complete, executing container process: %v\n", processArgs)
-
 		// Replace the first arg with the resolved path
 		processArgs[0] = execPath
 
 		// Use syscall.Exec to replace current process
 		err := syscall.Exec(execPath, processArgs, container.config.Process.Env)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: syscall.Exec failed: %v\n", err)
 			return nil, fmt.Errorf("failed to exec container process %s: %w", execPath, err)
 		}
 
@@ -251,23 +239,6 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 		// container.root is /root/containername, but we need /root for the factory to load container
 		containerRoot := filepath.Dir(container.root)
 
-		// Debug: Check rootfs accessibility
-		fmt.Fprintf(os.Stderr, "DEBUG: Rootfs path: %s\n", container.config.Rootfs)
-		rootfsInfo, err := os.Stat(container.config.Rootfs)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: Rootfs stat error: %v\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "DEBUG: Rootfs is dir: %v, mode: %v\n", rootfsInfo.IsDir(), rootfsInfo.Mode())
-		}
-
-		// Debug: Check if execPath exists
-		execInfo, err := os.Stat(execPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: ExecPath stat error: %v\n", err)
-		} else {
-			fmt.Fprintf(os.Stderr, "DEBUG: ExecPath exists: %s, mode: %v\n", execPath, execInfo.Mode())
-		}
-
 		initArgs := []string{execPath, "--root", containerRoot, "init", container.id, absBundle}
 		cmd := &exec.Cmd{
 			Path:   execPath,
@@ -281,9 +252,6 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 				Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWUTS,
 			},
 		}
-
-		// Debug: Log what we're about to execute
-		fmt.Fprintf(os.Stderr, "DEBUG: Parent re-executing as init: Path=%s, Args=%v\n", os.Args[0], initArgs)
 
 		return &initProcess{
 			cmd:       cmd,

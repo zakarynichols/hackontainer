@@ -6,6 +6,8 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -32,20 +34,64 @@ const (
 )
 
 type State struct {
-	ID          string            `json:"id"`
-	Pid         int               `json:"pid"`
-	Bundle      string            `json:"bundle"`
-	Status      Status            `json:"status"`
-	Created     time.Time         `json:"created"`
-	Annotations map[string]string `json:"annotations,omitempty"`
-	OCIVersion  string            `json:"ociVersion"`
+	ID                   string            `json:"id"`
+	Pid                  int               `json:"pid"`
+	Bundle               string            `json:"bundle"`
+	Status               Status            `json:"status"`
+	Created              time.Time         `json:"created"`
+	Annotations          map[string]string `json:"annotations,omitempty"`
+	OCIVersion           string            `json:"ociVersion"`
+	InitProcessStartTime uint64            `json:"initProcessStartTime,omitempty"`
+}
+
+type procState struct {
+	Pid       int
+	State     byte
+	StartTime uint64
+}
+
+func getProcState(pid int) (*procState, error) {
+	statPath := fmt.Sprintf("/proc/%d/stat", pid)
+	data, err := ioutil.ReadFile(statPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse /proc/[pid]/stat
+	// Format: pid (comm) state ...
+	// The comm field is in parentheses and may contain spaces, so we find the last )
+	idx := strings.LastIndex(string(data), ")")
+	if idx < 0 {
+		return nil, fmt.Errorf("invalid /proc/stat format")
+	}
+
+	// After ), we have: state pid ...
+	parts := strings.Split(string(data[idx+2:]), " ")
+	if len(parts) < 4 {
+		return nil, fmt.Errorf("invalid /proc/stat format")
+	}
+
+	state := parts[0][0] // First char is state (R, S, D, Z, T, X, etc)
+
+	// Start time is field 22 (index 21 in 0-based array after splitting)
+	startTime := uint64(0)
+	if len(parts) >= 22 {
+		startTime, _ = strconv.ParseUint(parts[21], 10, 64)
+	}
+
+	return &procState{
+		Pid:       pid,
+		State:     state,
+		StartTime: startTime,
+	}, nil
 }
 
 type linuxContainer struct {
-	id     string
-	root   string
-	config *config.Config
-	bundle string
+	id          string
+	root        string
+	config      *config.Config
+	bundle      string
+	initProcess parentProcess
 }
 
 func (c *linuxContainer) ID() string {
@@ -67,12 +113,38 @@ func (c *linuxContainer) State() (*State, error) {
 		return nil, err
 	}
 
-	// Check if process still exists for Running containers
-	// This is how runc, crun, and youki handle state - check /proc
-	if state.Status == Running && state.Pid > 0 {
-		if err := syscall.Kill(state.Pid, 0); err != nil {
-			// Process doesn't exist or is not accessible
+	// Check if we have an in-memory initProcess (like runc does)
+	// This is more reliable than just reading from disk
+	if c.initProcess != nil && state.Status == Running {
+		pid := c.initProcess.pid()
+		startTime, err := c.initProcess.startTime()
+		if err != nil {
 			state.Status = Stopped
+		} else if startTime != state.InitProcessStartTime && state.InitProcessStartTime != 0 {
+			state.Status = Stopped
+		} else {
+			procStat, err := getProcState(pid)
+			if err != nil {
+				state.Status = Stopped
+			} else if procStat.State == 'Z' || procStat.State == 'X' {
+				state.Status = Stopped
+			}
+		}
+	} else if state.Status == Running && state.Pid > 0 {
+		// Fallback: check if process exists using /proc
+		// First check if /proc/[pid] exists - this is more reliable than Kill in some namespace scenarios
+		procPath := fmt.Sprintf("/proc/%d", state.Pid)
+		if _, err := os.Stat(procPath); err != nil {
+			// Process doesn't exist
+			state.Status = Stopped
+		} else {
+			// Process exists, check state
+			procStat, err := getProcState(state.Pid)
+			if err != nil {
+				state.Status = Stopped
+			} else if procStat.State == 'Z' || procStat.State == 'X' {
+				state.Status = Stopped
+			}
 		}
 	}
 
@@ -80,14 +152,10 @@ func (c *linuxContainer) State() (*State, error) {
 }
 
 func (c *linuxContainer) Start() error {
-	fmt.Fprintf(os.Stderr, "DEBUG: Container.Start() called for container %s\n", c.id)
-
 	state, err := c.State()
 	if err != nil {
 		return err
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Container %s current status: %s\n", c.id, state.Status)
 
 	// OCI spec: start operation MUST only work on containers in 'created' state
 	if state.Status != Created {
@@ -106,54 +174,48 @@ func (c *linuxContainer) Start() error {
 		return fmt.Errorf("container process not configured")
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Creating init process for container %s with args: %v\n", c.id, c.config.Process.Args)
-
 	process, err := newInitProcess(c)
 	if err != nil {
 		return fmt.Errorf("failed to create init process: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: Starting init process for container %s\n", c.id)
 	if err := process.start(); err != nil {
 		return fmt.Errorf("failed to start init process: %w", err)
 	}
 
-	// Register container PID with reaper
-	RegisterContainer(process.pid(), c.root)
+	// Store initProcess in memory for reliable state checking (like runc)
+	c.initProcess = process
+
+	// Get process start time
+	startTime, err := process.startTime()
+	if err != nil {
+		startTime = 0
+	}
 
 	// Update state atomically after successful process start
 	state.Status = Running
 	state.Pid = process.pid()
+	state.InitProcessStartTime = startTime
 	if err := c.saveState(state); err != nil {
-		// If state save fails, try to terminate the process
 		_ = process.terminate()
 		return fmt.Errorf("failed to save container state after start: %w", err)
 	}
-
-	fmt.Fprintf(os.Stderr, "DEBUG: Container started successfully, reaper runs in init process\n")
 
 	return nil
 }
 
 // InitProcess creates and starts the init process for container initialization
 func (c *linuxContainer) InitProcess() error {
-	fmt.Fprintf(os.Stderr, "DEBUG: Container.InitProcess() called for container %s\n", c.id)
-
-	fmt.Fprintf(os.Stderr, "DEBUG: About to call newInitProcess()\n")
 	process, err := newInitProcess(c)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "DEBUG: newInitProcess() failed: %v\n", err)
 		return fmt.Errorf("failed to create init process: %w", err)
 	}
 
-	fmt.Fprintf(os.Stderr, "DEBUG: About to call process.start()\n")
 	if err := process.start(); err != nil {
-		fmt.Fprintf(os.Stderr, "DEBUG: process.start() failed: %v\n", err)
 		return fmt.Errorf("failed to start init process: %w", err)
 	}
 
 	// This should not be reached in normal operation as the init process will exec
-	fmt.Fprintf(os.Stderr, "DEBUG: process.start() returned unexpectedly - exec should have happened\n")
 	return nil
 }
 
