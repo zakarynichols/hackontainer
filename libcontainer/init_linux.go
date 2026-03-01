@@ -249,7 +249,14 @@ func newInitProcess(container *linuxContainer) (*initProcess, error) {
 			Dir:    container.config.Rootfs,
 			Env:    container.config.Process.Env,
 			SysProcAttr: &syscall.SysProcAttr{
-				Cloneflags: syscall.CLONE_NEWNS | syscall.CLONE_NEWPID | syscall.CLONE_NEWUTS,
+				Cloneflags: syscall.CLONE_NEWNS |
+					syscall.CLONE_NEWPID |
+					syscall.CLONE_NEWUTS |
+					syscall.CLONE_NEWNET |
+					syscall.CLONE_NEWIPC |
+					// syscall.CLONE_NEWUSER |
+					syscall.CLONE_NEWCGROUP |
+					syscall.CLONE_NEWTIME,
 			},
 		}
 
