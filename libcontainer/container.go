@@ -243,6 +243,15 @@ func (c *linuxContainer) Run() error {
 }
 
 func (c *linuxContainer) Delete() error {
+	// OCI spec: delete MUST generate an error if container is not stopped
+	state, err := c.State()
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to get container state: %w", err)
+	}
+	if state != nil && state.Status == Running {
+		return fmt.Errorf("cannot delete a container that is running")
+	}
+
 	statePath := filepath.Join(c.root, stateFilename)
 	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
 		return err
@@ -257,8 +266,9 @@ func (c *linuxContainer) Signal(sig syscall.Signal) error {
 		return fmt.Errorf("failed to get container state: %w", err)
 	}
 
-	if state.Status != Running {
-		return fmt.Errorf("cannot signal a container that is not running")
+	// OCI spec: kill MUST generate an error if container is neither created nor running
+	if state.Status != Running && state.Status != Created {
+		return fmt.Errorf("cannot signal a container that is not running or created")
 	}
 
 	if state.Pid == 0 {
