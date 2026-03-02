@@ -105,28 +105,14 @@ func setupRootfs(container *linuxContainer) error {
 		return fmt.Errorf("failed to prepare root: %w", err)
 	}
 
-	// Change directory to rootfs before pivot_root/chroot
+	// Change directory to rootfs before pivot_root
 	if err := unix.Chdir(container.config.Rootfs); err != nil {
 		return fmt.Errorf("failed to chdir to rootfs: %w", err)
 	}
 
-	// Check if we should use chroot instead of pivot_root
-	// For now, always use pivot_root (can be extended to check container.config.NoPivotRoot)
-	usePivotRoot := true // container.config.NoPivotRoot will be checked in future
-
-	if usePivotRoot {
-		// Perform pivot_root to jail the process
-		if err := pivotRoot(container.config.Rootfs); err != nil {
-			return fmt.Errorf("failed to pivot_root: %w", err)
-		}
-	} else {
-		// Fallback to chroot (simpler but less secure)
-		if err := unix.Chroot("."); err != nil {
-			return fmt.Errorf("failed to chroot: %w", err)
-		}
-		if err := unix.Chdir("/"); err != nil {
-			return fmt.Errorf("failed to chdir after chroot: %w", err)
-		}
+	// Perform pivot_root to jail the process
+	if err := pivotRoot(container.config.Rootfs); err != nil {
+		return fmt.Errorf("failed to pivot_root: %w", err)
 	}
 
 	// Mount /proc inside the container

@@ -16,7 +16,6 @@ const (
 type Factory interface {
 	Create(id, bundle string, options ...CreateOption) (Container, error)
 	Load(id string) (Container, error)
-	Type() string
 }
 
 type LinuxFactory struct {
@@ -126,10 +125,6 @@ func (l *LinuxFactory) Load(id string) (Container, error) {
 	container.bundle = state.Bundle
 
 	return container, nil
-}
-
-func (l *LinuxFactory) Type() string {
-	return "libcontainer"
 }
 
 func validateID(id string) error {

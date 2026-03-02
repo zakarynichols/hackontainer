@@ -45,9 +45,8 @@ type State struct {
 }
 
 type procState struct {
-	Pid       int
-	State     byte
-	StartTime uint64
+	Pid   int
+	State byte
 }
 
 func getProcState(pid int) (*procState, error) {
@@ -73,17 +72,35 @@ func getProcState(pid int) (*procState, error) {
 
 	state := parts[0][0] // First char is state (R, S, D, Z, T, X, etc)
 
-	// Start time is field 22 (index 21 in 0-based array after splitting)
-	startTime := uint64(0)
-	if len(parts) >= 22 {
-		startTime, _ = strconv.ParseUint(parts[21], 10, 64)
+	return &procState{
+		Pid:   pid,
+		State: state,
+	}, nil
+}
+
+func getProcessStartTime(pid int) (uint64, error) {
+	statPath := fmt.Sprintf("/proc/%d/stat", pid)
+	data, err := ioutil.ReadFile(statPath)
+	if err != nil {
+		return 0, err
 	}
 
-	return &procState{
-		Pid:       pid,
-		State:     state,
-		StartTime: startTime,
-	}, nil
+	idx := strings.LastIndex(string(data), ")")
+	if idx < 0 {
+		return 0, fmt.Errorf("invalid /proc/stat format")
+	}
+
+	parts := strings.Split(string(data[idx+2:]), " ")
+	if len(parts) < 22 {
+		return 0, fmt.Errorf("invalid /proc/stat format")
+	}
+
+	startTime, err := strconv.ParseUint(parts[21], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	return startTime, nil
 }
 
 type linuxContainer struct {

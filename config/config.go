@@ -12,9 +12,7 @@ import (
 type Config struct {
 	*specs.Spec
 
-	Rootfs          string
-	NoPivotRoot     bool    // For compatibility - use MS_MOVE + chroot instead of pivot_root
-	RootPropagation uintptr // Mount propagation flags for root
+	Rootfs string
 }
 
 func Load(path string) (*Config, error) {
@@ -65,13 +63,4 @@ func (c *Config) NormalizeRoot() error {
 }
 func (c *Config) Validate() error {
 	return Validate(c.Spec)
-}
-
-func (c *Config) Save(path string) error {
-	data, err := json.MarshalIndent(c.Spec, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	return os.WriteFile(path, data, 0644)
 }

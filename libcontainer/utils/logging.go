@@ -3,7 +3,6 @@ package utils
 import (
 	"errors"
 	"os"
-	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -91,15 +90,4 @@ func Infof(format string, args ...interface{}) {
 
 func Debugf(format string, args ...interface{}) {
 	logrus.Debugf(format, args...)
-}
-
-func SecureJoin(root, path string) (string, error) {
-	if root == "" {
-		return "", nil
-	}
-	return filepath.Join(root, path), nil
-}
-
-func CleanPath(path string) string {
-	return filepath.Clean(path)
 }
