@@ -4,12 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 
-	"github.com/zakarynichols/hackontainer/config"
 	"github.com/zakarynichols/hackontainer/libcontainer"
 )
 
@@ -21,7 +19,7 @@ var (
 func findCommand() string {
 	commands := map[string]bool{
 		"create": true, "delete": true, "run": true,
-		"start": true, "state": true, "kill": true, "init": true,
+		"start": true, "state": true, "kill": true,
 	}
 	for _, arg := range os.Args {
 		if commands[arg] {
@@ -32,6 +30,32 @@ func findCommand() string {
 }
 
 func main() {
+	// Check for --child flag (used by forked child process)
+	childMode := false
+	bundlePath := ""
+	for i, arg := range os.Args {
+		if arg == "--child" {
+			childMode = true
+		}
+		if arg == "--bundle" && i+1 < len(os.Args) {
+			bundlePath = os.Args[i+1]
+		}
+	}
+
+	if childMode {
+		// Child process: load config and run container setup/exec
+		parseGlobalFlags()
+
+		// Run child setup (this does pivot_root, hostname, exec)
+		err := libcontainer.RunAsChild(bundlePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		// Never returns - process is replaced by exec
+		return
+	}
+
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
@@ -61,8 +85,6 @@ func main() {
 		err = runState()
 	case "kill":
 		err = runKill()
-	case "init":
-		err = runInit()
 	case "-h", "-help", "--help":
 		printUsage()
 		os.Exit(0)
@@ -312,13 +334,6 @@ func runState() error {
 		return fmt.Errorf("failed to get container state: %w", err)
 	}
 
-	status, err := container.Status()
-	if err != nil {
-		return fmt.Errorf("failed to get container status: %w", err)
-	}
-
-	state.Status = libcontainer.Status(status)
-
 	json.NewEncoder(os.Stdout).Encode(state)
 	return nil
 }
@@ -341,12 +356,12 @@ func runStart() error {
 		return fmt.Errorf("failed to load container: %w", err)
 	}
 
-	status, err := container.Status()
+	state, err := container.State()
 	if err != nil {
-		return fmt.Errorf("failed to get container status: %w", err)
+		return fmt.Errorf("failed to get container state: %w", err)
 	}
 
-	switch status {
+	switch state.Status {
 	case libcontainer.Created:
 		if err := container.Start(); err != nil {
 			return fmt.Errorf("failed to start container: %w", err)
@@ -357,49 +372,8 @@ func runStart() error {
 	case libcontainer.Running:
 		return fmt.Errorf("cannot start an already running container")
 	default:
-		return fmt.Errorf("cannot start a container in the %s state", status)
+		return fmt.Errorf("cannot start a container in the %s state", state.Status)
 	}
-}
-
-func runInit() error {
-	args := getArgsAfter(0)
-	if len(args) != 2 {
-		return fmt.Errorf("need exactly 2 arguments, got %d", len(args))
-	}
-
-	containerID := args[0]
-	bundle := args[1]
-
-	factory, err := libcontainer.New(rootDir)
-	if err != nil {
-		return fmt.Errorf("failed to create factory: %w", err)
-	}
-
-	container, err := factory.Load(containerID)
-	if err != nil {
-		return fmt.Errorf("failed to load container: %w", err)
-	}
-
-	configPath := filepath.Join(bundle, "config.json")
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %w", err)
-	}
-
-	if cfg.Process == nil || len(cfg.Process.Args) == 0 {
-		return fmt.Errorf("no process specified in config")
-	}
-
-	env := cfg.Process.Env
-	if env == nil {
-		env = os.Environ()
-	}
-
-	if err := container.InitProcess(); err != nil {
-		return fmt.Errorf("failed to start init process: %w", err)
-	}
-
-	return nil
 }
 
 func runKill() error {
