@@ -9,415 +9,471 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/urfave/cli"
 	"github.com/zakarynichols/hackontainer/config"
 	"github.com/zakarynichols/hackontainer/libcontainer"
 )
 
-const (
-	specConfig = "config.json"
-	usage      = `OCI runtime`
+var (
+	rootDir     = "/run/hackontainer"
+	rootlessVal = "auto"
 )
 
+func findCommand() string {
+	commands := map[string]bool{
+		"create": true, "delete": true, "run": true,
+		"start": true, "state": true, "kill": true, "init": true,
+	}
+	for _, arg := range os.Args {
+		if commands[arg] {
+			return arg
+		}
+	}
+	return ""
+}
+
 func main() {
-	app := cli.NewApp()
-	app.Name = "hackontainer"
-	app.Usage = usage
-	app.Version = "1.0.0"
-
-	app.Flags = []cli.Flag{
-		cli.StringFlag{
-			Name:  "root",
-			Value: "/run/hackontainer",
-			Usage: "root directory for storage of container state (this should be located in tmpfs)",
-		},
-		cli.StringFlag{
-			Name:  "rootless",
-			Value: "auto",
-			Usage: "ignore cgroup permission errors ('true', 'false', or 'auto')",
-		},
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
 	}
 
-	app.Commands = []cli.Command{
-		createCommand,
-		deleteCommand,
-		runCommand,
-		startCommand,
-		stateCommand,
-		killCommand,
-		initCommand,
+	// Parse global flags first
+	parseGlobalFlags()
+
+	cmd := findCommand()
+	if cmd == "" {
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		printUsage()
+		os.Exit(1)
 	}
 
-	if err := app.Run(os.Args); err != nil {
+	var err error
+	switch cmd {
+	case "create":
+		err = runCreate()
+	case "delete":
+		err = runDelete()
+	case "run":
+		err = runRun()
+	case "start":
+		err = runStart()
+	case "state":
+		err = runState()
+	case "kill":
+		err = runKill()
+	case "init":
+		err = runInit()
+	case "-h", "-help", "--help":
+		printUsage()
+		os.Exit(0)
+	case "-v", "-version", "--version":
+		fmt.Println("hackontainer version 1.0.0")
+		os.Exit(0)
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", cmd)
+		printUsage()
+		os.Exit(1)
+	}
+
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func checkArgs(context *cli.Context, expected int, exact bool) error {
-	if !exact && context.NArg() < expected {
-		return fmt.Errorf("need at least %d arguments, got %d", expected, context.NArg())
+func parseGlobalFlags() {
+	// Parse global flags - can appear before OR after the subcommand
+	// os.Args format: [hackontainer [flags] command [flags] args]
+	// or for init: [hackontainer --root /path init id bundle]
+	i := 1
+	for i < len(os.Args) {
+		arg := os.Args[i]
+
+		// Check if this is a known command (not a flag)
+		if !strings.HasPrefix(arg, "-") {
+			// If it's a known command, stop parsing global flags
+			if arg == "create" || arg == "delete" || arg == "run" ||
+				arg == "start" || arg == "state" || arg == "kill" || arg == "init" {
+				break
+			}
+			// If it's not a known command and not a flag, treat as unknown
+			// But keep going to find actual command
+		}
+
+		// Parse global flags
+		if arg == "--root" && i+1 < len(os.Args) {
+			rootDir = os.Args[i+1]
+			i += 2
+		} else if strings.HasPrefix(arg, "--root=") {
+			rootDir = strings.TrimPrefix(arg, "--root=")
+			i++
+		} else if arg == "--rootless" && i+1 < len(os.Args) {
+			rootlessVal = os.Args[i+1]
+			i += 2
+		} else if strings.HasPrefix(arg, "--rootless=") {
+			rootlessVal = strings.TrimPrefix(arg, "--rootless=")
+			i++
+		} else {
+			i++
+		}
 	}
-	if exact && context.NArg() != expected {
-		return fmt.Errorf("need exactly %d arguments, got %d", expected, context.NArg())
+}
+
+func printUsage() {
+	fmt.Println("Usage: hackontainer <command> [options]")
+	fmt.Println("")
+	fmt.Println("Commands:")
+	fmt.Println("  create <container-id>   create a container")
+	fmt.Println("  delete <container-id>   delete a container")
+	fmt.Println("  run <container-id>      create and run a container")
+	fmt.Println("  start <container-id>    start a created container")
+	fmt.Println("  state <container-id>    get container state")
+	fmt.Println("  kill <container-id> [signal]  send signal to container")
+	fmt.Println("")
+	fmt.Println("Options:")
+	fmt.Println("  --root <path>       root directory for container state (default: /run/hackontainer)")
+	fmt.Println("  --rootless <mode>   ignore cgroup permission errors (default: auto)")
+}
+
+func findArgAfter(pos int) string {
+	// Skip command name and global flags
+	i := 2
+	for i < len(os.Args) {
+		arg := os.Args[i]
+		if !strings.HasPrefix(arg, "-") {
+			pos--
+			if pos == 0 {
+				return arg
+			}
+		}
+		if (arg == "-b" || arg == "--bundle" || arg == "--pid-file") && i+1 < len(os.Args) {
+			i += 2
+			continue
+		}
+		if strings.HasPrefix(arg, "-") && !strings.HasPrefix(arg, "--") {
+			i++
+			continue
+		}
+		if strings.HasPrefix(arg, "--") {
+			parts := strings.SplitN(arg, "=", 2)
+			if len(parts) == 1 {
+				i += 2
+				continue
+			}
+		}
+		i++
 	}
-	return nil
+	return ""
 }
 
-/*
-Create
-
-create <container-id> <path-to-bundle>
-
-This operation MUST generate an error if it is not provided a path to the
-bundle and the container ID to associate with the container. If the ID
-provided is not unique across all containers within the scope of the
-runtime, or is not valid in any other way, the implementation MUST generate
-an error and a new container MUST NOT be created. This operation MUST create
-a new container.
-
-All of the properties configured in config.json except for process MUST be
-applied. process.args MUST NOT be applied until triggered by the start
-operation. The remaining process properties MAY be applied by this
-operation. If the runtime cannot apply a property as specified in the
-configuration, it MUST generate an error and a new container MUST NOT be
-created.
-
-The runtime MAY validate config.json against this spec, either generically
-or with respect to the local system capabilities, before creating the
-container (step 2). Runtime callers who are interested in pre-create
-validation can run bundle-validation tools before invoking the create
-operation.
-
-Any changes made to the config.json file after this operation will not have
-an effect on the container.
-*/
-var createCommand = cli.Command{
-	Name:  "create",
-	Usage: "create a container",
-	Flags: []cli.Flag{
-		cli.StringFlag{
-			Name:  "bundle, b",
-			Value: ".",
-			Usage: "path to the container's bundle directory",
-		},
-		cli.StringFlag{
-			Name:  "pid-file",
-			Usage: "path to a file to write the container's PID",
-		},
-	},
-	Action: func(context *cli.Context) error {
-		if err := checkArgs(context, 1, true); err != nil {
-			return err
-		}
-
-		containerID := context.Args()[0]
-		bundle := context.String("bundle")
-
-		if _, err := os.Stat(context.GlobalString("root") + "/" + containerID); err == nil {
-			return fmt.Errorf("container id '%s' already exists in directory %s/%s", containerID, context.GlobalString("root"), containerID)
-		}
-
-		factory, err := libcontainer.New(context.GlobalString("root"))
-		if err != nil {
-			return fmt.Errorf("failed to create factory: %w", err)
-		}
-
-		container, err := factory.Create(containerID, bundle)
-		if err != nil {
-			return fmt.Errorf("failed to create container: %w", err)
-		}
-
-		// Write pid-file if specified
-		if pidFile := context.String("pid-file"); pidFile != "" {
-			state, err := container.State()
-			if err != nil {
-				return fmt.Errorf("failed to get container state: %w", err)
-			}
-			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.Pid)), 0644); err != nil {
-				return fmt.Errorf("failed to write PID file: %w", err)
+func findFlag(flag string) string {
+	for i := 2; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if arg == "-"+flag || arg == "--"+flag {
+			if i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
+				return os.Args[i+1]
 			}
 		}
-
-		return nil
-	},
+		if strings.HasPrefix(arg, "-"+flag+"=") {
+			return strings.TrimPrefix(arg, "-"+flag+"=")
+		}
+		if strings.HasPrefix(arg, "--"+flag+"=") {
+			return strings.TrimPrefix(arg, "--"+flag+"=")
+		}
+	}
+	return ""
 }
 
-var deleteCommand = cli.Command{
-	Name:  "delete",
-	Usage: "delete a container",
-	Action: func(context *cli.Context) error {
-		if err := checkArgs(context, 1, true); err != nil {
-			return err
-		}
+func runCreate() error {
+	args := getArgsAfter(0)
+	if len(args) != 1 {
+		return fmt.Errorf("need exactly 1 argument, got %d", len(args))
+	}
 
-		containerID := context.Args().First()
+	containerID := args[0]
+	bundle := findFlag("bundle")
+	if bundle == "" {
+		bundle = "."
+	}
+	pidFile := findFlag("pid-file")
 
-		factory, err := libcontainer.New(context.GlobalString("root"))
-		if err != nil {
-			return fmt.Errorf("failed to create factory: %w", err)
-		}
+	if _, err := os.Stat(rootDir + "/" + containerID); err == nil {
+		return fmt.Errorf("container id '%s' already exists in directory %s/%s", containerID, rootDir, containerID)
+	}
 
-		container, err := factory.Load(containerID)
-		if err != nil {
-			return fmt.Errorf("failed to load container: %w", err)
-		}
+	factory, err := libcontainer.New(rootDir)
+	if err != nil {
+		return fmt.Errorf("failed to create factory: %w", err)
+	}
 
-		if err := container.Delete(); err != nil {
-			return fmt.Errorf("failed to delete container: %w", err)
-		}
+	container, err := factory.Create(containerID, bundle)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %w", err)
+	}
 
-		return nil
-	},
-}
-
-var runCommand = cli.Command{
-	Name:  "run",
-	Usage: "create and run a container",
-	Flags: []cli.Flag{
-		cli.StringFlag{
-			Name:  "bundle, b",
-			Value: ".",
-			Usage: "path to the container's bundle directory",
-		},
-		cli.StringFlag{
-			Name:  "console-socket",
-			Usage: "path to a unix socket representing the console",
-		},
-		cli.StringFlag{
-			Name:  "pid-file",
-			Usage: "path to a file to write the container's PID",
-		},
-	},
-	Action: func(context *cli.Context) error {
-		if err := checkArgs(context, 1, true); err != nil {
-			return err
-		}
-
-		containerID := context.Args().First()
-		bundle := context.String("bundle")
-
-		factory, err := libcontainer.New(context.GlobalString("root"))
-		if err != nil {
-			return fmt.Errorf("failed to create factory: %w", err)
-		}
-
-		container, err := factory.Create(containerID, bundle)
-		if err != nil {
-			return fmt.Errorf("failed to create container: %w", err)
-		}
-
-		if err := container.Run(); err != nil {
-			return fmt.Errorf("failed to run container: %w", err)
-		}
-
-		if pidFile := context.String("pid-file"); pidFile != "" {
-			state, err := container.State()
-			if err != nil {
-				return fmt.Errorf("failed to get container state: %w", err)
-			}
-			if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.Pid)), 0644); err != nil {
-				return fmt.Errorf("failed to write PID file: %w", err)
-			}
-		}
-
-		return nil
-	},
-}
-
-var stateCommand = cli.Command{
-	Name:  "state",
-	Usage: "get the state of a container",
-	Action: func(context *cli.Context) error {
-		if err := checkArgs(context, 1, true); err != nil {
-			return err
-		}
-
-		containerID := context.Args().First()
-
-		factory, err := libcontainer.New(context.GlobalString("root"))
-		if err != nil {
-			return fmt.Errorf("failed to create factory: %w", err)
-		}
-
-		container, err := factory.Load(containerID)
-		if err != nil {
-			return fmt.Errorf("failed to load container: %w", err)
-		}
-
+	if pidFile != "" {
 		state, err := container.State()
 		if err != nil {
 			return fmt.Errorf("failed to get container state: %w", err)
 		}
-
-		status, err := container.Status()
-		if err != nil {
-			return fmt.Errorf("failed to get container status: %w", err)
+		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.Pid)), 0644); err != nil {
+			return fmt.Errorf("failed to write PID file: %w", err)
 		}
+	}
 
-		state.Status = libcontainer.Status(status)
-
-		json.NewEncoder(os.Stdout).Encode(state)
-		return nil
-	},
+	return nil
 }
 
-/*
-Start
+func runDelete() error {
+	args := getArgsAfter(0)
+	if len(args) != 1 {
+		return fmt.Errorf("need exactly 1 argument, got %d", len(args))
+	}
 
-start <container-id>
+	containerID := args[0]
 
-This operation MUST generate an error if it is not provided the container ID.
-Attempting to start a container that is not created MUST have no effect on the container
-and MUST generate an error. This operation MUST run the user-specified program as
-specified by process. This operation MUST generate an error if process was not set.
-*/
-var startCommand = cli.Command{
-	Name:        "start",
-	Usage:       "executes the user defined process in a created container",
-	ArgsUsage:   "start container",
-	Description: `The start command executes the user defined process in a created container.`,
-	Action: func(context *cli.Context) error {
-		if err := checkArgs(context, 1, true); err != nil {
-			return err
-		}
+	factory, err := libcontainer.New(rootDir)
+	if err != nil {
+		return fmt.Errorf("failed to create factory: %w", err)
+	}
 
-		containerID := context.Args().First()
+	container, err := factory.Load(containerID)
+	if err != nil {
+		return fmt.Errorf("failed to load container: %w", err)
+	}
 
-		factory, err := libcontainer.New(context.GlobalString("root"))
-		if err != nil {
-			return fmt.Errorf("failed to create factory: %w", err)
-		}
+	if err := container.Delete(); err != nil {
+		return fmt.Errorf("failed to delete container: %w", err)
+	}
 
-		container, err := factory.Load(containerID)
-		if err != nil {
-			return fmt.Errorf("failed to load container: %w", err)
-		}
-
-		status, err := container.Status()
-		if err != nil {
-			return fmt.Errorf("failed to get container status: %w", err)
-		}
-
-		// OCI spec: start must only work on containers in 'created' state
-		switch status {
-		case libcontainer.Created:
-			if err := container.Start(); err != nil {
-				return fmt.Errorf("failed to start container: %w", err)
-			}
-
-			return nil
-		case libcontainer.Stopped:
-			return fmt.Errorf("cannot start a container that has stopped")
-		case libcontainer.Running:
-			return fmt.Errorf("cannot start an already running container")
-		default:
-			return fmt.Errorf("cannot start a container in the %s state", status)
-		}
-	},
+	return nil
 }
 
-/*
-Init
+func runRun() error {
+	args := getArgsAfter(0)
+	if len(args) != 1 {
+		return fmt.Errorf("need exactly 1 argument, got %d", len(args))
+	}
 
-init <container-id> <path-to-bundle>
+	containerID := args[0]
+	bundle := findFlag("bundle")
+	if bundle == "" {
+		bundle = "."
+	}
+	pidFile := findFlag("pid-file")
 
-This is a special command that is used internally by the runtime.
-It sets up the container environment including namespaces, mounts, and then
-executes the container process. This command is not meant to be called directly
-by users.
-*/
-var initCommand = cli.Command{
-	Name:  "init",
-	Usage: "initialize the container process",
-	Action: func(context *cli.Context) error {
-		if err := checkArgs(context, 2, true); err != nil {
-			return err
-		}
+	factory, err := libcontainer.New(rootDir)
+	if err != nil {
+		return fmt.Errorf("failed to create factory: %w", err)
+	}
 
-		containerID := context.Args()[0]
-		bundle := context.Args()[1]
+	container, err := factory.Create(containerID, bundle)
+	if err != nil {
+		return fmt.Errorf("failed to create container: %w", err)
+	}
 
-		factory, err := libcontainer.New(context.GlobalString("root"))
+	if err := container.Run(); err != nil {
+		return fmt.Errorf("failed to run container: %w", err)
+	}
+
+	if pidFile != "" {
+		state, err := container.State()
 		if err != nil {
-			return fmt.Errorf("failed to create factory: %w", err)
+			return fmt.Errorf("failed to get container state: %w", err)
 		}
-
-		container, err := factory.Load(containerID)
-		if err != nil {
-			return fmt.Errorf("failed to load container: %w", err)
+		if err := os.WriteFile(pidFile, []byte(fmt.Sprintf("%d", state.Pid)), 0644); err != nil {
+			return fmt.Errorf("failed to write PID file: %w", err)
 		}
+	}
 
-		configPath := filepath.Join(bundle, "config.json")
-		config, err := config.Load(configPath)
-		if err != nil {
-			return fmt.Errorf("failed to load config: %w", err)
-		}
-
-		if config.Process == nil || len(config.Process.Args) == 0 {
-			return fmt.Errorf("no process specified in config")
-		}
-
-		env := config.Process.Env
-		if env == nil {
-			env = os.Environ()
-		}
-
-		if err := container.InitProcess(); err != nil {
-			return fmt.Errorf("failed to start init process: %w", err)
-		}
-
-		return nil
-	},
+	return nil
 }
 
-var killCommand = cli.Command{
-	Name:  "kill",
-	Usage: "kill sends the specified signal (default: SIGTERM) to the container's init process",
-	ArgsUsage: `<container-id> [signal]
+func runState() error {
+	args := getArgsAfter(0)
+	if len(args) != 1 {
+		return fmt.Errorf("need exactly 1 argument, got %d", len(args))
+	}
 
-Where "<container-id>" is the name for the instance of the container and
-"[signal]" is the signal to be sent to the init process.
+	containerID := args[0]
 
-EXAMPLE:
-For example, if the container id is "ubuntu01" the following will send a "KILL"
-signal to the init process of the "ubuntu01" container:
+	factory, err := libcontainer.New(rootDir)
+	if err != nil {
+		return fmt.Errorf("failed to create factory: %w", err)
+	}
 
-       # hackontainer kill ubuntu01 KILL`,
-	Action: func(context *cli.Context) error {
-		if context.NArg() < 1 || context.NArg() > 2 {
-			return fmt.Errorf("need 1 or 2 arguments, got %d", context.NArg())
+	container, err := factory.Load(containerID)
+	if err != nil {
+		return fmt.Errorf("failed to load container: %w", err)
+	}
+
+	state, err := container.State()
+	if err != nil {
+		return fmt.Errorf("failed to get container state: %w", err)
+	}
+
+	status, err := container.Status()
+	if err != nil {
+		return fmt.Errorf("failed to get container status: %w", err)
+	}
+
+	state.Status = libcontainer.Status(status)
+
+	json.NewEncoder(os.Stdout).Encode(state)
+	return nil
+}
+
+func runStart() error {
+	args := getArgsAfter(0)
+	if len(args) != 1 {
+		return fmt.Errorf("need exactly 1 argument, got %d", len(args))
+	}
+
+	containerID := args[0]
+
+	factory, err := libcontainer.New(rootDir)
+	if err != nil {
+		return fmt.Errorf("failed to create factory: %w", err)
+	}
+
+	container, err := factory.Load(containerID)
+	if err != nil {
+		return fmt.Errorf("failed to load container: %w", err)
+	}
+
+	status, err := container.Status()
+	if err != nil {
+		return fmt.Errorf("failed to get container status: %w", err)
+	}
+
+	switch status {
+	case libcontainer.Created:
+		if err := container.Start(); err != nil {
+			return fmt.Errorf("failed to start container: %w", err)
 		}
-
-		containerID := context.Args()[0]
-
-		factory, err := libcontainer.New(context.GlobalString("root"))
-		if err != nil {
-			return fmt.Errorf("failed to create factory: %w", err)
-		}
-
-		container, err := factory.Load(containerID)
-		if err != nil {
-			return fmt.Errorf("failed to load container: %w", err)
-		}
-
-		sigstr := context.Args().Get(1)
-		if sigstr == "" {
-			sigstr = "SIGTERM"
-		}
-
-		sig, err := parseSignal(sigstr)
-		if err != nil {
-			return err
-		}
-
-		err = container.Signal(sig)
-		if err != nil {
-			return fmt.Errorf("failed to send signal: %w", err)
-		}
-
 		return nil
-	},
+	case libcontainer.Stopped:
+		return fmt.Errorf("cannot start a container that has stopped")
+	case libcontainer.Running:
+		return fmt.Errorf("cannot start an already running container")
+	default:
+		return fmt.Errorf("cannot start a container in the %s state", status)
+	}
+}
+
+func runInit() error {
+	args := getArgsAfter(0)
+	if len(args) != 2 {
+		return fmt.Errorf("need exactly 2 arguments, got %d", len(args))
+	}
+
+	containerID := args[0]
+	bundle := args[1]
+
+	factory, err := libcontainer.New(rootDir)
+	if err != nil {
+		return fmt.Errorf("failed to create factory: %w", err)
+	}
+
+	container, err := factory.Load(containerID)
+	if err != nil {
+		return fmt.Errorf("failed to load container: %w", err)
+	}
+
+	configPath := filepath.Join(bundle, "config.json")
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	if cfg.Process == nil || len(cfg.Process.Args) == 0 {
+		return fmt.Errorf("no process specified in config")
+	}
+
+	env := cfg.Process.Env
+	if env == nil {
+		env = os.Environ()
+	}
+
+	if err := container.InitProcess(); err != nil {
+		return fmt.Errorf("failed to start init process: %w", err)
+	}
+
+	return nil
+}
+
+func runKill() error {
+	args := getArgsAfter(0)
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("need 1 or 2 arguments, got %d", len(args))
+	}
+
+	containerID := args[0]
+
+	factory, err := libcontainer.New(rootDir)
+	if err != nil {
+		return fmt.Errorf("failed to create factory: %w", err)
+	}
+
+	container, err := factory.Load(containerID)
+	if err != nil {
+		return fmt.Errorf("failed to load container: %w", err)
+	}
+
+	sigStr := "SIGTERM"
+	if len(args) == 2 {
+		sigStr = args[1]
+	}
+
+	sig, err := parseSignal(sigStr)
+	if err != nil {
+		return err
+	}
+
+	err = container.Signal(sig)
+	if err != nil {
+		return fmt.Errorf("failed to send signal: %w", err)
+	}
+
+	return nil
+}
+
+func getArgsAfter(skip int) []string {
+	var args []string
+	commands := map[string]bool{
+		"create": true, "delete": true, "run": true,
+		"start": true, "state": true, "kill": true, "init": true,
+	}
+
+	// Find the command position
+	cmdPos := -1
+	for i, arg := range os.Args {
+		if commands[arg] {
+			cmdPos = i
+			break
+		}
+	}
+
+	if cmdPos == -1 {
+		return args
+	}
+
+	// Collect args after the command, skipping flags
+	for i := cmdPos + 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		if !strings.HasPrefix(arg, "-") {
+			args = append(args, arg)
+		} else if arg == "-b" || arg == "--bundle" || arg == "--pid-file" || arg == "--console-socket" {
+			// Skip flag value
+			i++
+		} else if strings.HasPrefix(arg, "--") && strings.Contains(arg, "=") {
+			// Skip --flag=value format
+		} else if len(arg) == 2 && arg[0] == '-' {
+			// Skip single dash flags (-b etc)
+			i++
+		}
+	}
+	return args
 }
 
 func parseSignal(rawSignal string) (syscall.Signal, error) {
