@@ -4,7 +4,6 @@ go 1.24.0
 
 require (
 	github.com/opencontainers/runtime-spec v1.3.0
-	github.com/sirupsen/logrus v1.9.4
 	github.com/urfave/cli v1.22.17
 )
 

@@ -12,7 +12,6 @@ import (
 	"github.com/urfave/cli"
 	"github.com/zakarynichols/hackontainer/config"
 	"github.com/zakarynichols/hackontainer/libcontainer"
-	"github.com/zakarynichols/hackontainer/libcontainer/utils"
 )
 
 const (
@@ -27,20 +26,6 @@ func main() {
 	app.Version = "1.0.0"
 
 	app.Flags = []cli.Flag{
-		cli.BoolFlag{
-			Name:  "debug",
-			Usage: "enable debug logging",
-		},
-		cli.StringFlag{
-			Name:  "log",
-			Value: "",
-			Usage: "set the log file to write runtime logs to (default is '/dev/stderr')",
-		},
-		cli.StringFlag{
-			Name:  "log-format",
-			Value: "text",
-			Usage: "set the log format ('text' (default), or 'json')",
-		},
 		cli.StringFlag{
 			Name:  "root",
 			Value: "/run/hackontainer",
@@ -63,24 +48,10 @@ func main() {
 		initCommand,
 	}
 
-	app.Before = func(context *cli.Context) error {
-		return setupLogging(context)
-	}
-
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-func setupLogging(context *cli.Context) error {
-	logConfig := &utils.LoggingConfig{
-		Debug:     context.GlobalBool("debug"),
-		LogFile:   context.GlobalString("log"),
-		LogFormat: context.GlobalString("log-format"),
-	}
-
-	return utils.SetupLogging(logConfig)
 }
 
 func checkArgs(context *cli.Context, expected int, exact bool) error {
@@ -168,7 +139,6 @@ var createCommand = cli.Command{
 			}
 		}
 
-		utils.Infof("Container %s created successfully", container.ID())
 		return nil
 	},
 }
@@ -197,7 +167,6 @@ var deleteCommand = cli.Command{
 			return fmt.Errorf("failed to delete container: %w", err)
 		}
 
-		utils.Infof("Container %s deleted successfully", containerID)
 		return nil
 	},
 }
@@ -252,7 +221,6 @@ var runCommand = cli.Command{
 			}
 		}
 
-		utils.Infof("Container %s started successfully", containerID)
 		return nil
 	},
 }
@@ -337,7 +305,6 @@ var startCommand = cli.Command{
 			if err := container.Start(); err != nil {
 				return fmt.Errorf("failed to start container: %w", err)
 			}
-			utils.Infof("Container %s started successfully", containerID)
 
 			return nil
 		case libcontainer.Stopped:
@@ -364,16 +331,12 @@ var initCommand = cli.Command{
 	Name:  "init",
 	Usage: "initialize the container process",
 	Action: func(context *cli.Context) error {
-		fmt.Println("DEBUG: init command action started, args:", os.Args)
-
 		if err := checkArgs(context, 2, true); err != nil {
 			return err
 		}
 
 		containerID := context.Args()[0]
 		bundle := context.Args()[1]
-
-		fmt.Println("DEBUG: init - containerID=" + containerID + ", bundle=" + bundle)
 
 		factory, err := libcontainer.New(context.GlobalString("root"))
 		if err != nil {
@@ -385,7 +348,6 @@ var initCommand = cli.Command{
 			return fmt.Errorf("failed to load container: %w", err)
 		}
 
-		// Load config to get process args
 		configPath := filepath.Join(bundle, "config.json")
 		config, err := config.Load(configPath)
 		if err != nil {
@@ -396,24 +358,15 @@ var initCommand = cli.Command{
 			return fmt.Errorf("no process specified in config")
 		}
 
-		// Set up environment variables
 		env := config.Process.Env
 		if env == nil {
 			env = os.Environ()
 		}
 
-		// In init mode - this is the re-executed process
-		fmt.Fprintf(os.Stderr, "DEBUG: Init command called for container %s\n", containerID)
-		fmt.Fprintf(os.Stderr, "DEBUG: Loading container from factory\n")
-
-		// Call the container's init process method (this will exec the container process)
-		fmt.Fprintf(os.Stderr, "DEBUG: About to call container.InitProcess()\n")
 		if err := container.InitProcess(); err != nil {
-			fmt.Fprintf(os.Stderr, "DEBUG: container.InitProcess() failed: %v\n", err)
 			return fmt.Errorf("failed to start init process: %w", err)
 		}
 
-		// This should never be reached as the init process will exec
 		return nil
 	},
 }
@@ -463,7 +416,6 @@ signal to the init process of the "ubuntu01" container:
 			return fmt.Errorf("failed to send signal: %w", err)
 		}
 
-		utils.Infof("Signal %s sent to container %s", sigstr, containerID)
 		return nil
 	},
 }
